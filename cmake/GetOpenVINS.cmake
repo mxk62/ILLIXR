@@ -1,6 +1,7 @@
 fetch_git(NAME OpenVINS
           REPO https://github.com/ILLIXR/open_vins.git
           TAG 4976aa6426e01dad6115d09ad575d84a9ae575da         # sha5 hash for specific commit to pull (if there is no specific tag to use)
+          PATCH
 )
 
 set(TEMP_FLAGS ${CMAKE_CXX_FLAGS})
