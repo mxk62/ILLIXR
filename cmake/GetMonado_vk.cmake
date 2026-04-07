@@ -1,4 +1,13 @@
 # module to download, build and install the Monado ILLIXR_vk plugin
+
+# xcb-icccm is required by Monado's compositor — check before attempting the build
+find_library(XCB_ICCCM_LIB xcb-icccm NO_CACHE)
+find_path(XCB_ICCCM_INCLUDE_DIR xcb/xcb_icccm.h NO_CACHE)
+if(NOT XCB_ICCCM_LIB OR NOT XCB_ICCCM_INCLUDE_DIR)
+    message(FATAL_ERROR "xcb-icccm not found (required by MonadoVK).\n"
+                        "Install it with:  sudo apt install libxcb-icccm4-dev")
+endif()
+
 get_external_for_plugin(OpenXR_APP)
 list(APPEND EXTERNAL_PROJECTS Monado_vk)
 find_program(MONADO_VK_FOUND
