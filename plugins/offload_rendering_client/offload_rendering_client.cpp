@@ -317,12 +317,14 @@ void offload_rendering_client::_p_one_iteration() {
         dst_linesizes[1] = u_step_;
         dst_linesizes[2] = v_step_;
 
-        auto ret = nppiNV12ToYUV420_8u_P2P3R(pSrc, decode_out_color_frames_[eye]->linesize[0], pDst, dst_linesizes, roi);
+        auto ret = nppiNV12ToYUV420_8u_P2P3R_Ctx(pSrc, decode_out_color_frames_[eye]->linesize[0], pDst, dst_linesizes, roi,
+                                                   npp_stream_ctx_);
         assert(ret == NPP_SUCCESS);
 
         // Convert YUV420 to BGRA
         auto dst = reinterpret_cast<Npp8u*>(decode_converted_color_frames_[eye]->data[0]);
-        ret      = nppiYUV420ToBGR_8u_P3C4R(pDst, dst_linesizes, dst, decode_converted_color_frames_[eye]->linesize[0], roi);
+        ret = nppiYUV420ToBGR_8u_P3C4R_Ctx(pDst, dst_linesizes, dst, decode_converted_color_frames_[eye]->linesize[0], roi,
+                                             npp_stream_ctx_);
         assert(ret == NPP_SUCCESS);
 
         // Process depth frames if enabled
@@ -332,11 +334,12 @@ void offload_rendering_client::_p_one_iteration() {
             Npp8u* pSrc_depth[2];
             pSrc_depth[0] = reinterpret_cast<Npp8u*>(decode_out_depth_frames_[eye]->data[0]);
             pSrc_depth[1] = reinterpret_cast<Npp8u*>(decode_out_depth_frames_[eye]->data[1]);
-            ret = nppiNV12ToYUV420_8u_P2P3R(pSrc_depth, decode_out_depth_frames_[eye]->linesize[0], pDst, dst_linesizes, roi);
+            ret = nppiNV12ToYUV420_8u_P2P3R_Ctx(pSrc_depth, decode_out_depth_frames_[eye]->linesize[0], pDst, dst_linesizes,
+                                                  roi, npp_stream_ctx_);
             assert(ret == NPP_SUCCESS);
             auto dst_depth = reinterpret_cast<Npp8u*>(decode_converted_depth_frames_[eye]->data[0]);
-            ret =
-                nppiYUV420ToBGR_8u_P3C4R(pDst, dst_linesizes, dst_depth, decode_converted_depth_frames_[eye]->linesize[0], roi);
+            ret = nppiYUV420ToBGR_8u_P3C4R_Ctx(pDst, dst_linesizes, dst_depth, decode_converted_depth_frames_[eye]->linesize[0],
+                                                 roi, npp_stream_ctx_);
             assert(ret == NPP_SUCCESS);
         }
         cudaDeviceSynchronize();

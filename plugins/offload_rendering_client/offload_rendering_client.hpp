@@ -237,7 +237,8 @@ private:
     int           u_step_         = 0;
     int           v_step_         = 0;
 
-    uint64_t frame_count_ = 0;
+    uint64_t       frame_count_    = 0;
+    NppStreamContext npp_stream_ctx_{};
 
     VkFence fence_{};
 
