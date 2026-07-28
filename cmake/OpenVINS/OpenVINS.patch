@@ -9,3 +9,17 @@
 
          }
 
+--- ov_core/CMakeLists.txt
++++ ov_core/CMakeLists.txt
+@@ -47,6 +47,10 @@
+ # Set link libraries used by all binaries
+ list(APPEND thirdparty_libraries
+      Boost::serialization
++     Boost::chrono
++     Boost::thread
++     Boost::filesystem
++     Boost::atomic
+      spdlog::spdlog
+      opencv_core
+      opencv_imgproc
+
