@@ -425,7 +425,7 @@ function(fetch_git)
                                  GIT_PROGRESS TRUE
                                  GIT_SUBMODULES_RECURSE ${fetch_RECURSE}
                                  SOURCE_SUBDIR ${fetch_SUBDIR}
-                                 PATCH_COMMAND ${CMAKE_CURRENT_LIST_DIR}/../do_patch.sh -p ${CMAKE_CURRENT_LIST_DIR}/${fetch_NAME}/${fetch_NAME}.patch
+                                 PATCH_COMMAND ${CMAKE_CURRENT_LIST_DIR}/do_patch.sh -p ${CMAKE_CURRENT_LIST_DIR}/${fetch_NAME}/${fetch_NAME}.patch
                                  ${OVERRIDE_TEXT}
             )
         else()
@@ -434,7 +434,7 @@ function(fetch_git)
                                  GIT_TAG ${fetch_TAG}
                                  GIT_SUBMODULES_RECURSE ${fetch_RECURSE}
                                  GIT_PROGRESS TRUE
-                                 PATCH_COMMAND ${CMAKE_CURRENT_LIST_DIR}/../do_patch.sh -p ${CMAKE_CURRENT_LIST_DIR}/${fetch_NAME}/${fetch_NAME}.patch
+                                 PATCH_COMMAND ${CMAKE_CURRENT_LIST_DIR}/do_patch.sh -p ${CMAKE_CURRENT_LIST_DIR}/${fetch_NAME}/${fetch_NAME}.patch
                                  ${OVERRIDE_TEXT}
             )
         endif()
@@ -483,7 +483,7 @@ function(fetch_url)
         FetchContent_Declare(${fetch_NAME}
                              URL ${fetch_SRC_URL}
                              URL_HASH ${fetch_HASH}
-                             PATCH_COMMAND ${CMAKE_CURRENT_LIST_DIR}/../do_patch.sh -p ${CMAKE_CURRENT_LIST_DIR}/${fetch_NAME}/${fetch_NAME}.patch
+                             PATCH_COMMAND ${CMAKE_CURRENT_LIST_DIR}/do_patch.sh -p ${CMAKE_CURRENT_LIST_DIR}/${fetch_NAME}/${fetch_NAME}.patch
                              ${OVERRIDE_TEXT}
         )
     else()
