@@ -114,6 +114,7 @@ if(USE_ADA.DEVICE_TX OR USE_ADA.SERVER_RX OR USE_OFFLOAD_VIO.SERVER_RX OR USE_OF
         )
 
         target_compile_definitions(video_encoder_ada PUBLIC ADA)
+        set_target_properties(video_encoder_ada PROPERTIES POSITION_INDEPENDENT_CODE ON)
     endif()
 
     if(USE_ADA.SERVER_RX)
@@ -132,6 +133,7 @@ if(USE_ADA.DEVICE_TX OR USE_ADA.SERVER_RX OR USE_OFFLOAD_VIO.SERVER_RX OR USE_OF
                               ${LINK_LIBS}
         )
         target_compile_definitions(video_decoder_ada PUBLIC ADA)
+        set_target_properties(video_decoder_ada PROPERTIES POSITION_INDEPENDENT_CODE ON)
     endif()
 
     if(USE_OFFLOAD_VIO.DEVICE_TX)
@@ -151,6 +153,7 @@ if(USE_ADA.DEVICE_TX OR USE_ADA.SERVER_RX OR USE_OFFLOAD_VIO.SERVER_RX OR USE_OF
         )
 
         target_compile_definitions(video_encoder_vio PUBLIC VIO)
+        set_target_properties(video_encoder_vio PROPERTIES POSITION_INDEPENDENT_CODE ON)
     endif()
 
     if(USE_OFFLOAD_VIO.SERVER_RX)
@@ -169,5 +172,6 @@ if(USE_ADA.DEVICE_TX OR USE_ADA.SERVER_RX OR USE_OFFLOAD_VIO.SERVER_RX OR USE_OF
                               ${LINK_LIBS}
         )
         target_compile_definitions(video_decoder_vio PUBLIC VIO)
+        set_target_properties(video_decoder_vio PROPERTIES POSITION_INDEPENDENT_CODE ON)
     endif()
 endif()

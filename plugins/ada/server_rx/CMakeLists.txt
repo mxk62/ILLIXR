@@ -26,7 +26,6 @@ else()
                 ${ILLIXR_SOURCE_DIR}/include/illixr/phonebook.hpp
                 ${ILLIXR_SOURCE_DIR}/include/illixr/switchboard.hpp
                 ${ILLIXR_SOURCE_DIR}/include/illixr/threadloop.hpp
-                $<TARGET_OBJECTS:video_decoder_ada>
     )
 
     find_package(PkgConfig)
