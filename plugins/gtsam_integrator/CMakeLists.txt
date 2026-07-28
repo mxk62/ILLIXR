@@ -21,8 +21,8 @@ else()
     endif()
 
     #add_definitions(-Wall -Wextra -Werror)
-    target_include_directories(${PLUGIN_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${GTSAM_INCLUDE_DIR} ${ILLIXR_SOURCE_DIR}/include)
-    target_link_libraries(${PLUGIN_NAME} ${GTSAM_LIBRARIES} Eigen3::Eigen spdlog::spdlog)
+    target_include_directories(${PLUGIN_NAME} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${ILLIXR_SOURCE_DIR}/include)
+    target_link_libraries(${PLUGIN_NAME} gtsam Eigen3::Eigen spdlog::spdlog)
 
     install(TARGETS ${PLUGIN_NAME} DESTINATION lib)
 endif()
