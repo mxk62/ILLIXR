@@ -8,7 +8,7 @@ set(TEMP_FLAGS ${CMAKE_CXX_FLAGS})
 set(CMAKE_CXX_FLAGS -L${CMAKE_INSTALL_PREFIX}/lib)
 set(ILLIXR_INTEGRATION ON)
 set(CMAKE_CXX_FLAGS ${TEMP_FLAGS})
-set(ILLIXR_ROOT ${CMAKE_SOURCE_DIR}/include)
+set(ILLIXR_ROOT ${CMAKE_SOURCE_DIR}/include CACHE PATH "Directory of ILLIXR includes" FORCE)
 configure_target(NAME OpenVINS
                  NO_FIND
                  MATCH_BUILD_TYPE
