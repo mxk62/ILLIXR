@@ -1,5 +1,10 @@
 #include "plugin.hpp"
 
+#include <cstdlib>
+#if defined(__linux__)
+    #include <unordered_map>
+#endif
+
 using namespace ILLIXR;
 
 tcp_network_backend::tcp_network_backend(const std::string& name_, phonebook* pb_)
@@ -33,10 +38,23 @@ tcp_network_backend::tcp_network_backend(const std::string& name_, phonebook* pb
         is_client_ = 0;
     }
 
+    use_mptcp_ = switchboard_->get_env_bool("ILLIXR_TCP_USE_MPTCP");
+#if !defined(__linux__)
+    if (use_mptcp_) {
+        throw std::runtime_error("[tcp_network_backend] ILLIXR_TCP_USE_MPTCP is set, but MPTCP is only supported on Linux");
+    }
+#endif
+    spdlog::get("illixr")->info("[tcp_network_backend] Transport: {}", use_mptcp_ ? "MPTCP" : "TCP");
+
     if (is_client_) {
         client = true;
         std::thread([this]() {
-            start_client();
+            try {
+                start_client();
+            } catch (const std::exception& e) {
+                spdlog::get("illixr")->error("[tcp_network_backend] {}", e.what());
+                std::exit(EXIT_FAILURE);
+            }
         }).detach();
 
         // wait till we are connected
@@ -46,7 +64,12 @@ tcp_network_backend::tcp_network_backend(const std::string& name_, phonebook* pb
     } else {
         client = false;
         std::thread([this]() {
-            start_server();
+            try {
+                start_server();
+            } catch (const std::exception& e) {
+                spdlog::get("illixr")->error("[tcp_network_backend] {}", e.what());
+                std::exit(EXIT_FAILURE);
+            }
         }).detach();
 
         while (!ready_) {
@@ -56,7 +79,8 @@ tcp_network_backend::tcp_network_backend(const std::string& name_, phonebook* pb
 }
 
 void tcp_network_backend::start_client() {
-    auto* socket = new network::TCPSocket();
+    auto* socket =
+        new network::TCPSocket(use_mptcp_ ? network::TCPSocket::Protocol::MPTCP : network::TCPSocket::Protocol::DEFAULT);
     if (switchboard_->get_env_char("ILLIXR_TCP_CLIENT_IP") && switchboard_->get_env_char("ILLIXR_TCP_CLIENT_PORT")) {
         socket->socket_bind(client_ip_, client_port_);
     }
@@ -69,11 +93,19 @@ void tcp_network_backend::start_client() {
     std::cout << "Connected to server" << std::endl;
 
     ready_ = true;
+#if defined(__linux__)
+    if (use_mptcp_) {
+        mptcp_monitor_thread_ = std::thread([this, socket]() {
+            monitor_mptcp_subflows(socket);
+        });
+    }
+#endif
     read_loop(socket);
 }
 
 void tcp_network_backend::start_server() {
-    network::TCPSocket server_socket;
+    network::TCPSocket server_socket(use_mptcp_ ? network::TCPSocket::Protocol::MPTCP
+                                                 : network::TCPSocket::Protocol::DEFAULT);
     server_socket.socket_set_reuseaddr();
     server_socket.socket_bind(server_ip_, server_port_);
     server_socket.enable_no_delay();
@@ -83,8 +115,47 @@ void tcp_network_backend::start_server() {
     std::cout << "Accepted connection from client: " << client_socket->peer_address() << std::endl;
     peer_socket_ = client_socket;
     ready_       = true;
+#if defined(__linux__)
+    if (use_mptcp_) {
+        mptcp_monitor_thread_ = std::thread([this, client_socket]() {
+            monitor_mptcp_subflows(client_socket);
+        });
+    }
+#endif
     read_loop(client_socket);
 }
+
+#if defined(__linux__)
+void tcp_network_backend::monitor_mptcp_subflows(network::TCPSocket* socket) {
+    constexpr auto                                                poll_interval = std::chrono::seconds(2);
+    std::unordered_map<std::string, network::MptcpSubflowStats>   previous;
+
+    while (running_) {
+        std::this_thread::sleep_for(poll_interval);
+
+        std::vector<network::MptcpSubflowStats> subflows = socket->mptcp_subflow_stats();
+        if (subflows.empty()) {
+            continue;
+        }
+
+        spdlog::get("illixr")->debug("[tcp_network_backend] MPTCP subflows: {}", subflows.size());
+        for (const auto& subflow : subflows) {
+            std::string key        = subflow.local_addr + "->" + subflow.remote_addr;
+            uint64_t    sent_d     = subflow.bytes_sent;
+            uint64_t    received_d = subflow.bytes_received;
+            auto        it         = previous.find(key);
+            if (it != previous.end()) {
+                sent_d     = subflow.bytes_sent - it->second.bytes_sent;
+                received_d = subflow.bytes_received - it->second.bytes_received;
+            }
+            spdlog::get("illixr")->debug(
+                "[tcp_network_backend]   subflow {}: sent={} (+{}) received={} (+{})", key, subflow.bytes_sent, sent_d,
+                subflow.bytes_received, received_d);
+            previous[key] = subflow;
+        }
+    }
+}
+#endif
 
 void tcp_network_backend::read_loop(network::TCPSocket* socket) {
     std::string buffer;
@@ -169,6 +240,11 @@ void tcp_network_backend::topic_receive(const std::string& topic_name, std::vect
 
 void tcp_network_backend::stop() {
     running_ = false;
+#if defined(__linux__)
+    if (mptcp_monitor_thread_.joinable()) {
+        mptcp_monitor_thread_.join();
+    }
+#endif
     delete peer_socket_;
 }
 

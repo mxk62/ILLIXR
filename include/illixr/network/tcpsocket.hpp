@@ -22,22 +22,60 @@
 #else
     #include <arpa/inet.h>
     #include <netinet/in.h>
-    #include <netinet/tcp.h>
+    #if defined(__linux__)
+// The kernel UAPI struct tcp_info (linux/tcp.h) has the RFC4898 byte-count fields
+// (tcpi_bytes_sent/tcpi_bytes_received) used by mptcp_subflow_stats() below; glibc's own
+// netinet/tcp.h ships an older, smaller struct tcp_info under the same name, so only one of
+// the two headers can be included.
+        #include <linux/tcp.h>
+    #else
+        #include <netinet/tcp.h>
+    #endif
     #include <sys/socket.h>
     #include <unistd.h>
     #define BYTE_TYPE   ssize_t
     #define SOCKET_TYPE int
 #endif
 
+#if defined(__linux__)
+    #include <linux/mptcp.h>
+#endif
+
 #include "illixr/export.hpp"
 
+#include <algorithm>
+#include <cerrno>
+#include <cstdint>
+#include <cstring>
 #include <string>
+#include <vector>
+
+// Only meaningful on Linux, but defined unconditionally so TCPSocket::Protocol::MPTCP
+// compiles everywhere; callers must not request it on non-Linux platforms.
+#if !defined(IPPROTO_MPTCP)
+    #define IPPROTO_MPTCP 262
+#endif
 
 namespace ILLIXR::network {
 
+#if defined(__linux__)
+// Per-subflow snapshot returned by TCPSocket::mptcp_subflow_stats(). Byte counters are
+// cumulative since the subflow was established (as reported by the kernel's tcp_info).
+struct MptcpSubflowStats {
+    std::string local_addr;  // "ip:port"
+    std::string remote_addr; // "ip:port"
+    uint64_t    bytes_sent;
+    uint64_t    bytes_received;
+};
+#endif
+
 class MY_EXPORT_API TCPSocket {
 public:
-    TCPSocket() {
+    // Underlying transport protocol to request from the OS. DEFAULT lets the OS pick
+    // the default protocol for SOCK_STREAM (plain TCP).
+    enum class Protocol { DEFAULT = 0, MPTCP = IPPROTO_MPTCP };
+
+    explicit TCPSocket(Protocol protocol = Protocol::DEFAULT) {
 #if defined(_WIN32) || defined(_WIN64)
         static bool initialized = false;
         if (!initialized) {
@@ -48,10 +86,14 @@ public:
             initialized = true;
         }
 #endif
-        fd_ = socket(AF_INET, SOCK_STREAM, 0);
+        fd_ = socket(AF_INET, SOCK_STREAM, static_cast<int>(protocol));
 #if defined(_WIN32) || defined(_WIN64)
         if (fd_ == INVALID_SOCKET)
             throw std::runtime_error("startup failed");
+#else
+        if (fd_ < 0) {
+            throw std::runtime_error(std::string("socket() failed: ") + strerror(errno));
+        }
 #endif
     }
 
@@ -170,32 +212,64 @@ public:
         sockaddr_in local_address;
         socklen_t   size = sizeof(local_address);
         getsockname(fd_, (struct sockaddr*) &local_address, &size);
-
-#if defined(_WIN32) || defined(_WIN64)
-        char local_ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &local_address.sin_addr, local_ip, sizeof(local_ip));
-#else
-        char* local_ip = inet_ntoa(local_address.sin_addr);
-#endif
-        int local_port = ntohs(local_address.sin_port);
-        return std::string(local_ip) + ":" + std::to_string(local_port);
+        return sockaddr_in_to_string(local_address);
     }
 
     [[nodiscard]] std::string peer_address() const {
         sockaddr_in peer_address;
         socklen_t   size = sizeof(peer_address);
         getpeername(fd_, (struct sockaddr*) &peer_address, &size);
-#if defined(_WIN32) || defined(_WIN64)
-        char peer_ip[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &peer_address.sin_addr, peer_ip, sizeof(peer_ip));
-#else
-        char* peer_ip = inet_ntoa(peer_address.sin_addr);
-#endif
-        int peer_port = ntohs(peer_address.sin_port);
-        return std::string(peer_ip) + ":" + std::to_string(peer_port);
+        return sockaddr_in_to_string(peer_address);
     }
 
+#if defined(__linux__)
+    // Query per-subflow statistics via getsockopt(SOL_MPTCP, MPTCP_FULL_INFO) (kernel >=
+    // 5.19). Returns an empty vector if this isn't an MPTCP socket, the kernel doesn't
+    // support the call, or the connection hasn't been established yet.
+    [[nodiscard]] std::vector<MptcpSubflowStats> mptcp_subflow_stats() const {
+        constexpr uint32_t MAX_SUBFLOWS = 8;
+
+        mptcp_subflow_info sf_info[MAX_SUBFLOWS]{};
+        tcp_info            tcp_infos[MAX_SUBFLOWS]{};
+
+        mptcp_full_info full_info{};
+        full_info.size_tcpinfo_user = sizeof(tcp_info);
+        full_info.size_sfinfo_user  = sizeof(mptcp_subflow_info);
+        full_info.size_arrays_user  = MAX_SUBFLOWS;
+        full_info.subflow_info      = reinterpret_cast<__aligned_u64>(sf_info);
+        full_info.tcp_info          = reinterpret_cast<__aligned_u64>(tcp_infos);
+
+        socklen_t len = sizeof(full_info);
+        if (getsockopt(fd_, SOL_MPTCP, MPTCP_FULL_INFO, &full_info, &len) < 0) {
+            return {};
+        }
+
+        std::vector<MptcpSubflowStats> result;
+        uint32_t                       count = std::min(full_info.num_subflows, MAX_SUBFLOWS);
+        result.reserve(count);
+        for (uint32_t i = 0; i < count; i++) {
+            MptcpSubflowStats stats;
+            stats.local_addr     = sockaddr_in_to_string(sf_info[i].addrs.sin_local);
+            stats.remote_addr    = sockaddr_in_to_string(sf_info[i].addrs.sin_remote);
+            stats.bytes_sent     = tcp_infos[i].tcpi_bytes_sent;
+            stats.bytes_received = tcp_infos[i].tcpi_bytes_received;
+            result.push_back(std::move(stats));
+        }
+        return result;
+    }
+#endif
+
 private:
+    [[nodiscard]] static std::string sockaddr_in_to_string(const sockaddr_in& addr) {
+#if defined(_WIN32) || defined(_WIN64)
+        char ip[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &addr.sin_addr, ip, sizeof(ip));
+        return std::string(ip) + ":" + std::to_string(ntohs(addr.sin_port));
+#else
+        return std::string(inet_ntoa(addr.sin_addr)) + ":" + std::to_string(ntohs(addr.sin_port));
+#endif
+    }
+
     [[nodiscard]] std::string::const_iterator write_helper(const std::string::const_iterator& begin,
                                                            const std::string::const_iterator& end) const {
         BYTE_TYPE bytes_written =

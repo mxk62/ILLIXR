@@ -6,6 +6,8 @@
 #include "illixr/plugin.hpp"
 #include "illixr/switchboard.hpp"
 
+#include <thread>
+
 namespace ILLIXR {
 
 class MY_EXPORT_API tcp_network_backend
@@ -25,11 +27,16 @@ public:
 
 private:
     void send_to_peer(const std::string& topic_name, std::string&& message);
+#if defined(__linux__)
+    void monitor_mptcp_subflows(network::TCPSocket* socket);
+#endif
 
     std::shared_ptr<switchboard> switchboard_;
     std::atomic<bool>            running_     = true;
     std::atomic<bool>            ready_       = false;
     network::TCPSocket*          peer_socket_ = nullptr;
+    bool                         use_mptcp_   = false;
+    std::thread                  mptcp_monitor_thread_;
 
     std::string server_ip_;
     int         server_port_;
