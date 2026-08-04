@@ -1,5 +1,8 @@
 #include "illixr/video_decoder.hpp"
 
+#include <chrono>
+#include <thread>
+
 using namespace ILLIXR;
 
 void video_decoder::create_pipelines() {
@@ -71,6 +74,23 @@ void video_decoder::create_pipelines() {
 
     gst_element_set_state(pipeline_img0_, GST_STATE_PLAYING);
     gst_element_set_state(pipeline_img1_, GST_STATE_PLAYING);
+
+    // gst_element_set_state() only requests the transition; the NVIDIA
+    // hardware codec elements (nvv4l2decoder) need real wall-clock time to
+    // finish opening the V4L2 device and negotiating DMA buffers before they
+    // can reliably process the first real buffer. Blocking on
+    // gst_element_get_state() until the transition fully completes isn't an
+    // option here: for a live pipeline, the async PLAYING transition itself
+    // doesn't fully resolve until real data flows through, so that would
+    // deadlock (a caller can't push data before create_pipelines() returns).
+    // A fixed delay is a pragmatic stand-in for the warm-up time that
+    // tcp_network_backend's own ~100ms connection-readiness polling used to
+    // provide for free; a lower-latency transport that delivers the first
+    // frame sooner doesn't give the hardware codec that same free runway,
+    // and a first buffer pushed too early can produce a malformed bitstream
+    // (e.g. missing SPS/PPS) that the decoder then hangs on indefinitely
+    // rather than rejecting.
+    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
 }
 
 GstFlowReturn video_decoder::cb_appsink(GstElement* sink) {
