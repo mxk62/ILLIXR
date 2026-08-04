@@ -112,7 +112,24 @@ private:
     std::string key_path_;
     bool        no_verify_ = false;
     std::string steering_scheme_;
-    uint64_t    initial_max_path_id_ = 0;
+    // Only call biphony::{Client,Server}Config::initial_max_path_id() when
+    // this is > 0. Biphony's multipath transport-parameter negotiation
+    // (quiche's set_initial_max_path_id) checks only for the *presence* of a
+    // value on both peers, not whether it's positive -- so calling it with 0
+    // still negotiates the multipath extension on ("capped" at path 0 in
+    // theory), rather than leaving multipath off entirely. The only way to
+    // get genuinely single-path behavior with this API is to never call the
+    // setter at all (leave the transport parameter unset on both sides), so
+    // 0 here must mean "don't call it", not "call it with 0".
+    uint64_t initial_max_path_id_ = 0;
+    // Biphony's own hardcoded default (5000ms) is too short for ILLIXR: the
+    // VIO/encoder pipeline can go several seconds between topic_create's
+    // handshake messages and the first real data send while it warms up
+    // (dataset loading, GStreamer encoder init, etc.), which is long enough
+    // for quiche to tear the connection down as idle before any real traffic
+    // ever flows. Default to a much longer timeout; override via env if
+    // needed.
+    uint64_t idle_timeout_ms_ = 60000;
 
     // Extra local source addresses to bind for additional multipath QUIC
     // paths (client-only; mirrors the repeatable `-A`/`--address` CLI flag
