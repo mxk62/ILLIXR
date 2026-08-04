@@ -38,6 +38,11 @@ std::vector<std::string> split_comma_separated(const std::string& value) {
 biphony_network_backend::biphony_network_backend(const std::string& name_, phonebook* pb_)
     : plugin(name_, pb_)
     , switchboard_{pb_->lookup_impl<switchboard>()} {
+    // Surfaces engine-internal errors (e.g. stream_send failures) that would
+    // otherwise be silently discarded, since Biphony's FFI never installs a
+    // log backend on its own. Controlled by RUST_LOG (e.g. RUST_LOG=quiche_apps=debug).
+    biphony::init_logging();
+
     is_client_ = switchboard_->get_env_char("ILLIXR_IS_CLIENT")
         ? std::stoi(switchboard_->get_env_char("ILLIXR_IS_CLIENT")) != 0
         : false;
@@ -63,6 +68,9 @@ biphony_network_backend::biphony_network_backend(const std::string& name_, phone
     if (switchboard_->get_env_char("ILLIXR_BIPHONY_CLIENT_ADDRESSES")) {
         client_addresses_ = split_comma_separated(switchboard_->get_env_char("ILLIXR_BIPHONY_CLIENT_ADDRESSES"));
     }
+    if (switchboard_->get_env_char("ILLIXR_BIPHONY_IDLE_TIMEOUT_MS")) {
+        idle_timeout_ms_ = std::stoull(switchboard_->get_env_char("ILLIXR_BIPHONY_IDLE_TIMEOUT_MS"));
+    }
 
     if (is_client_) {
         client           = true;
@@ -71,6 +79,7 @@ biphony_network_backend::biphony_network_backend(const std::string& name_, phone
         // biphony::ClientConfig expects a URL, not a bare socket address.
         std::string connect_url = "https://" + server_address_ + "/";
         biphony::ClientConfig cfg(connect_url);
+        cfg.idle_timeout(idle_timeout_ms_);
         if (!steering_scheme_.empty()) {
             cfg.steering_scheme(steering_scheme_);
         }
@@ -114,6 +123,7 @@ biphony_network_backend::biphony_network_backend(const std::string& name_, phone
         next_stream_id_ = 1; // server-initiated bidi streams: 1, 5, 9, ...
 
         biphony::ServerConfig cfg(server_address_, cert_path_, key_path_);
+        cfg.idle_timeout(idle_timeout_ms_);
         if (!steering_scheme_.empty()) {
             cfg.steering_scheme(steering_scheme_);
         }

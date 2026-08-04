@@ -42,6 +42,12 @@ ILLIXR_BIPHONY_STEERING_SCHEME: Multipath steering scheme (default: Biphony's ow
   default, "single_path").
 ILLIXR_BIPHONY_INITIAL_MAX_PATH_ID: Initial max path id for multipath (default: 0,
   i.e. single-path).
+ILLIXR_BIPHONY_IDLE_TIMEOUT_MS: QUIC idle timeout in milliseconds (default: 60000).
+  Biphony's own hardcoded default is 5000ms, which is too short for ILLIXR: the
+  VIO/encoder pipeline can go several seconds between the topic_create handshake
+  and the first real data send while it warms up (dataset loading, GStreamer
+  encoder init, etc.), long enough for quiche to tear the connection down as idle
+  before any real traffic ever flows.
 ```
 
 ## Priority mapping
