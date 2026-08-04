@@ -27,7 +27,15 @@ include(FetchContent)
 set(BIPHONY_REPO "git@github.com:NSF-Breaking-Low-Agora/biphony_quiche.git")
 # Pinned to a specific commit (rather than a moving branch) for build
 # reproducibility. Update this as Biphony's FFI stabilizes.
-set(BIPHONY_TAG  "b34f5f5f834469e77706eff937039dbc59d69a4b")
+#
+# NOTE: this does NOT include the one-shot-stream-retirement fix
+# (github.com/NSF-Breaking-Low-Agora/biphony/issues/26, fix on the
+# `issues/26` branch there, based on `main`). That fix isn't on this FFI
+# branch yet, so a connection sending many independent one-shot messages
+# will permanently exhaust initial_max_streams_bidi (500) and stop making
+# progress after that many messages. Update this pin once issues/26 is
+# reviewed and its fix is available on a branch that also has the FFI.
+set(BIPHONY_TAG  "1f90b96498ef0fdc56a260be10312da782b70c17")
 
 FetchContent_Declare(Biphony
                       GIT_REPOSITORY ${BIPHONY_REPO}
