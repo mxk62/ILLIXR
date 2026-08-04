@@ -1,5 +1,8 @@
 #include "illixr/video_encoder.hpp"
 
+#include <chrono>
+#include <thread>
+
 using namespace ILLIXR;
 
 void video_encoder::create_pipelines() {
@@ -138,4 +141,15 @@ void video_encoder::create_pipelines() {
 #endif
     gst_element_set_state(pipeline_img0_, GST_STATE_PLAYING);
     gst_element_set_state(pipeline_img1_, GST_STATE_PLAYING);
+
+    // See the matching comment in utils/video_decoder.cpp: the NVIDIA
+    // hardware codec elements (here nvv4l2h264enc/nvv4l2h265enc) need real
+    // wall-clock time to finish initializing before they can reliably
+    // process the first real buffer, and blocking on gst_element_get_state()
+    // isn't an option for a live pipeline (it won't fully resolve until data
+    // flows). A lower-latency transport than TCP can deliver -- or in this
+    // case, allow the caller to push -- the first frame before that warm-up
+    // has happened, producing a malformed encoded bitstream that then hangs
+    // a hardware decoder downstream instead of being rejected cleanly.
+    std::this_thread::sleep_for(std::chrono::milliseconds(3000));
 }
