@@ -34,7 +34,7 @@ set(BIPHONY_REPO "git@github.com:NSF-Breaking-Low-Agora/biphony_quiche.git")
 # upstream and `issues/26` is still awaiting the Biphony author's review.
 # Once `issues/26` is reviewed and merged into a branch that already carries
 # the FFI, re-pin to that upstream commit instead of this local cherry-pick.
-set(BIPHONY_TAG  "996be0b45d60ac3a9b485efb492fdf6d288d7e34")
+set(BIPHONY_TAG  "177922bb0d633676c7c08583d96ec13a56fe3f6d")
 
 FetchContent_Declare(Biphony
                       GIT_REPOSITORY ${BIPHONY_REPO}
