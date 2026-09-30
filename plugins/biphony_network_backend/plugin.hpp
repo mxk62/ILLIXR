@@ -5,9 +5,8 @@
 #include "illixr/plugin.hpp"
 #include "illixr/switchboard.hpp"
 
-#include <biphony.hpp>
-
 #include <atomic>
+#include <biphony.hpp>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -45,15 +44,14 @@ public:
     bool client;
 
 private:
-    template <typename Engine>
+    template<typename Engine>
     void run_read_loop(Engine& engine);
 
-    template <typename Engine>
-    bool send_raw(Engine& engine, uint64_t peer_client_id, const std::string& topic_name,
-                  const std::string& message, uint8_t biphony_priority);
+    template<typename Engine>
+    bool send_raw(Engine& engine, uint64_t peer_client_id, const std::string& topic_name, const std::string& message,
+                  uint8_t biphony_priority);
 
-    void send_to_peer(const std::string& topic_name, std::string&& message,
-                       network::topic_config::priority_type priority);
+    void send_to_peer(const std::string& topic_name, std::string&& message, network::topic_config::priority_type priority);
 
     // Maps ILLIXR's topic_config::priority_type (higher enum value = more
     // urgent) onto Biphony/QUIC's HTTP/3 extensible-priority "urgency"
@@ -102,12 +100,12 @@ private:
     static const std::string CONTROL_TOPIC;
     static const std::string DELIMITER;
 
-    std::mutex                                              topics_mutex_;
-    std::vector<std::string>                                networked_topics_;
-    std::unordered_map<std::string, network::topic_config>  networked_topics_configs_;
+    std::mutex                                             topics_mutex_;
+    std::vector<std::string>                               networked_topics_;
+    std::unordered_map<std::string, network::topic_config> networked_topics_configs_;
 
     // env-derived configuration
-    bool        is_client_ = false;
+    bool is_client_ = false;
     // Bare "ip:port" of the server, used by both roles: the server binds to
     // it directly, and the client wraps it into a connect URL
     // ("https://<server_address_>/") since biphony::ClientConfig expects a

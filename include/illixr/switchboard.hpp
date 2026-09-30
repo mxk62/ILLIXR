@@ -927,9 +927,10 @@ public:
         case network::topic_config::TransportMethod::BIPHONY:
             backend = phonebook_->lookup_impl<network::biphony_backend>();
             if (!backend) {
-                throw std::runtime_error("[switchboard] Biphony transport requested for topic '" + topic_name +
-                                         "' but no Biphony network backend is registered in the phonebook. "
-                                         "Ensure the biphony_network_backend plugin is loaded before this writer is constructed.");
+                throw std::runtime_error(
+                    "[switchboard] Biphony transport requested for topic '" + topic_name +
+                    "' but no Biphony network backend is registered in the phonebook. "
+                    "Ensure the biphony_network_backend plugin is loaded before this writer is constructed.");
             }
             break;
         case network::topic_config::TransportMethod::TCP:

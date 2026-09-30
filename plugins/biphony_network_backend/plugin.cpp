@@ -9,7 +9,7 @@
 using namespace ILLIXR;
 
 const std::string biphony_network_backend::CONTROL_TOPIC = "illixr_control";
-const std::string biphony_network_backend::DELIMITER      = ":";
+const std::string biphony_network_backend::DELIMITER     = ":";
 
 namespace {
 // Reserved topic name for the handshake "hello" the client sends immediately
@@ -43,9 +43,8 @@ biphony_network_backend::biphony_network_backend(const std::string& name_, phone
     // log backend on its own. Controlled by RUST_LOG (e.g. RUST_LOG=quiche_apps=debug).
     biphony::init_logging();
 
-    is_client_ = switchboard_->get_env_char("ILLIXR_IS_CLIENT")
-        ? std::stoi(switchboard_->get_env_char("ILLIXR_IS_CLIENT")) != 0
-        : false;
+    is_client_ =
+        switchboard_->get_env_char("ILLIXR_IS_CLIENT") ? std::stoi(switchboard_->get_env_char("ILLIXR_IS_CLIENT")) != 0 : false;
 
     if (switchboard_->get_env_char("ILLIXR_BIPHONY_SERVER_ADDRESS")) {
         server_address_ = switchboard_->get_env_char("ILLIXR_BIPHONY_SERVER_ADDRESS");
@@ -80,11 +79,11 @@ biphony_network_backend::biphony_network_backend(const std::string& name_, phone
 }
 
 void biphony_network_backend::start_client() {
-    client           = true;
-    next_stream_id_  = 0; // client-initiated bidi streams: 0, 4, 8, ...
+    client          = true;
+    next_stream_id_ = 0; // client-initiated bidi streams: 0, 4, 8, ...
 
     // biphony::ClientConfig expects a URL, not a bare socket address.
-    std::string connect_url = "https://" + server_address_ + "/";
+    std::string           connect_url = "https://" + server_address_ + "/";
     biphony::ClientConfig cfg(connect_url);
     cfg.idle_timeout(idle_timeout_ms_);
     if (!steering_scheme_.empty()) {
@@ -103,15 +102,13 @@ void biphony_network_backend::start_client() {
         cfg.address(addr);
     }
     if (!cfg.valid()) {
-        spdlog::get("illixr")->critical("[biphony_network_backend] invalid client config: {}",
-                                         biphony::last_error_message());
+        spdlog::get("illixr")->critical("[biphony_network_backend] invalid client config: {}", biphony::last_error_message());
         throw std::runtime_error("biphony_network_backend: invalid client config");
     }
 
     client_engine_ = std::make_unique<biphony::Client>(std::move(cfg)); // blocks until all paths validated
     if (!client_engine_->valid()) {
-        spdlog::get("illixr")->critical("[biphony_network_backend] connect failed: {}",
-                                         biphony::last_error_message());
+        spdlog::get("illixr")->critical("[biphony_network_backend] connect failed: {}", biphony::last_error_message());
         throw std::runtime_error("biphony_network_backend: connect failed");
     }
     spdlog::get("illixr")->info("[biphony_network_backend] connected to {}", connect_url);
@@ -140,15 +137,13 @@ void biphony_network_backend::start_server() {
         cfg.initial_max_path_id(initial_max_path_id_);
     }
     if (!cfg.valid()) {
-        spdlog::get("illixr")->critical("[biphony_network_backend] invalid server config: {}",
-                                         biphony::last_error_message());
+        spdlog::get("illixr")->critical("[biphony_network_backend] invalid server config: {}", biphony::last_error_message());
         throw std::runtime_error("biphony_network_backend: invalid server config");
     }
 
     server_engine_ = std::make_unique<biphony::Server>(std::move(cfg)); // blocks until socket bound
     if (!server_engine_->valid()) {
-        spdlog::get("illixr")->critical("[biphony_network_backend] listen failed: {}",
-                                         biphony::last_error_message());
+        spdlog::get("illixr")->critical("[biphony_network_backend] listen failed: {}", biphony::last_error_message());
         throw std::runtime_error("biphony_network_backend: listen failed");
     }
     spdlog::get("illixr")->info("[biphony_network_backend] listening on {}", server_address_);
@@ -168,15 +163,15 @@ uint8_t biphony_network_backend::map_priority(network::topic_config::priority_ty
     return static_cast<uint8_t>(network::topic_config::HIGHEST - p);
 }
 
-template <typename Engine>
+template<typename Engine>
 bool biphony_network_backend::send_raw(Engine& engine, uint64_t peer_client_id, const std::string& topic_name,
-                                        const std::string& message, uint8_t biphony_priority) {
+                                       const std::string& message, uint8_t biphony_priority) {
     // Wire payload: topic_name_length:4B (uint32) | topic_name | message
     // No outer total_length prefix is needed (unlike tcp_network_backend's
     // hand-rolled byte-stream framing): Biphony already delivers one complete
     // logical message per recv() call.
     std::vector<uint8_t> packet(4 + topic_name.size() + message.size());
-    uint32_t              topic_name_length = static_cast<uint32_t>(topic_name.size());
+    uint32_t             topic_name_length = static_cast<uint32_t>(topic_name.size());
     std::memcpy(packet.data(), &topic_name_length, 4);
     std::memcpy(packet.data() + 4, topic_name.data(), topic_name.size());
     std::memcpy(packet.data() + 4 + topic_name.size(), message.data(), message.size());
@@ -186,7 +181,7 @@ bool biphony_network_backend::send_raw(Engine& engine, uint64_t peer_client_id, 
 }
 
 void biphony_network_backend::send_to_peer(const std::string& topic_name, std::string&& message,
-                                            network::topic_config::priority_type priority) {
+                                           network::topic_config::priority_type priority) {
     uint8_t prio = map_priority(priority);
     if (client) {
         // biphony::Client only ever talks to one server; the client_id
@@ -203,11 +198,11 @@ void biphony_network_backend::send_to_peer(const std::string& topic_name, std::s
     }
 }
 
-template <typename Engine>
+template<typename Engine>
 void biphony_network_backend::run_read_loop(Engine& engine) {
     while (running_) {
         biphony::Message msg;
-        int               rc = engine.recv(msg); // blocks indefinitely
+        int              rc = engine.recv(msg); // blocks indefinitely
         if (rc == BIPHONY_ERR_DISCONNECTED) {
             spdlog::get("illixr")->warn("[biphony_network_backend] peer disconnected");
             running_ = false;
