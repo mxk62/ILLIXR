@@ -1,7 +1,8 @@
 # Network Backends
 
 ILLIXR supports several network backends. Each networked topic can be assigned to any one of the available types. There 
-are currently network backends for TCP and UDP protocols. We recommend UPD for traffic where occasional packet loss is
+are currently network backends for TCP and UDP protocols, and for [Biphony](https://github.com/NSF-Breaking-Low-Agora/biphony_quiche),
+a QUIC-based multipath transport. We recommend UPD for traffic where occasional packet loss is
 acceptable (e.g., sending head poses at 120 Hz). We recommend TCP for traffic where delivery must be ensured (e.g., images).
 One caveat to consider when deciding which protocol to use for a topic is packet size. Some platforms and operating systems
 will allow several small TCP packets to accrue in the buffers (sending and/or receiving) before transmitting or releasing
@@ -31,7 +32,14 @@ call takes a `network::topic_config` argument. The `topic_config` struct is used
     Values are `IMMEDIATE`, `DEFAULT`, `SUGGEST_LATENCY`.
   - serialization_method (enum): The serialization method to use for the topic. Values are `BOOST`(default) and `PROTOBUF`.
     If `BOOST` is used, ensure that the necessary serialization code for the topic's data type is in `include/illixr/data_format/serialization` ans `utils/serialization`. If `PROTOBUF` is used, ensure that the necessary `.proto` file exists and is built for the particular plugin.
-  - transport_method (enum): the transport method to use, currently `TCP`(default) or `UDP`.
+  - transport_method (enum): the transport method to use: `TCP`(default), `UDP`, or `BIPHONY`. The switchboard hands the
+    topic to the backend registered for that transport (`tcp_network_backend`, `udp_network_backend`, or
+    `biphony_network_backend`), so the matching plugin must be loaded, or `get_network_writer` throws.
+
+Plugins that want the transport to be chosen at run time rather than hard-coded can parse it from an environment variable
+with `network::parse_transport_method()` (declared in `illixr/network/topic_config.hpp`), which accepts `tcp`, `udp`, or
+`biphony` (case-insensitive) and treats an empty string as `tcp`. The `offload_vio` plugins do this with
+`ILLIXR_OFFLOAD_VIO_TRANSPORT`.
 
 ### Network Backend Configuration
 
@@ -62,6 +70,14 @@ A port on each machine should be specified for each of the network backend types
     For some Android devices you may need to change the ports being used if the OS reports it cannot bind to the given port.
     This can be due to another app having claimed the port previously and not released it, even if the app was shut down.
 
+#### Biphony
+
+`biphony_network_backend` does not use the IP address and port variables above (including `ILLIXR_SERVER_IP` and
+`ILLIXR_CLIENT_IP`). Instead, both the client and the server read the server's address from
+`ILLIXR_BIPHONY_SERVER_ADDRESS` (a bare `ip:port`). The server also needs a TLS certificate and key
+(`ILLIXR_BIPHONY_CERT_PATH`, `ILLIXR_BIPHONY_KEY_PATH`). The remaining multipath and timeout settings are described in
+`plugins/biphony_network_backend/README.md`.
+
 #### Client Selection
 
 The `ILLIXR_IS_CLIENT` environment variable is used to determine if the backend instance is running as the client (value = "1") or server (value = "0").
@@ -82,4 +98,12 @@ To configure a network topic to use UDP with Boost serialization:
 
 ``` c++
  combined_pose_writer_{switchboard_->get_network_writer<data_format::pose::combined_pose>("combined_pose", {.serialization_method=network::topic_config::BOOST, .transport_method=network::topic_config::UDP})}
+```
+
+#### Biphony with Protobuf
+
+To configure a network topic to use Biphony with Protobuf serialization:
+
+``` c++
+ vio_pose_writer_{switchboard_->get_network_writer<switchboard::event_wrapper<std::string>>("vio_pose", network::topic_config{network::topic_config::PROTOBUF, network::topic_config::BIPHONY})}
 ```

@@ -3,10 +3,12 @@
 `biphony_network_backend` manages the transmission and reception of data published on
 networked topics (created by `get_network_writer` in Switchboard) through
 [Biphony](https://github.com/NSF-Breaking-Low-Agora/biphony_quiche), a QUIC-based
-multipath transport. It is a drop-in structural alternative to `tcp_network_backend`:
-both implement the same `network::network_backend` phonebook service, so exactly one of
-the two may be loaded in a given profile (they can't coexist — `phonebook::register_impl`
-asserts against duplicate registration of the same service interface).
+multipath transport. It is registered in the phonebook as `network::biphony_backend`,
+separately from the TCP and UDP backends, so it no longer conflicts with them in the
+phonebook. A topic uses
+it when its `topic_config::transport_method` is `BIPHONY`. The `offload_vio` plugins select
+it at run time with `ILLIXR_OFFLOAD_VIO_TRANSPORT=biphony`, which the
+`offload_vio_*_biphony` profiles set.
 
 ```
 ILLIXR_IS_CLIENT: Set to `1` if this process is acting as the client; otherwise `0`.
