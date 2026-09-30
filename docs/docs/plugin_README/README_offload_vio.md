@@ -42,6 +42,11 @@ replace <> in --data with `data`) from the device.
 To run the client and server on different machines, please again refer to the README in `tcp_network_backend` for
 setting appropriate server IP address and port number.
 
+The network transport used by `offload_vio.device_tx` and `offload_vio.server_tx` is selected with
+`ILLIXR_OFFLOAD_VIO_TRANSPORT` (`tcp`, `udp` or `biphony`; default `tcp`). The matching network backend plugin
+(`tcp_network_backend`, `udp_network_backend` or `biphony_network_backend`) must be loaded. The
+`offload_vio_device_monado_biphony` and `offload_vio_server_biphony` profiles set it to `biphony`.
+
 ## Compression
 
 H.264 codec is supported for compressing the camera images to save bandwidth. To enable compression, define

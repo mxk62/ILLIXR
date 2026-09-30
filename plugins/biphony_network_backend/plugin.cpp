@@ -73,81 +73,89 @@ biphony_network_backend::biphony_network_backend(const std::string& name_, phone
     }
 
     if (is_client_) {
-        client           = true;
-        next_stream_id_  = 0; // client-initiated bidi streams: 0, 4, 8, ...
-
-        // biphony::ClientConfig expects a URL, not a bare socket address.
-        std::string connect_url = "https://" + server_address_ + "/";
-        biphony::ClientConfig cfg(connect_url);
-        cfg.idle_timeout(idle_timeout_ms_);
-        if (!steering_scheme_.empty()) {
-            cfg.steering_scheme(steering_scheme_);
-        }
-        if (initial_max_path_id_ != 0) {
-            cfg.initial_max_path_id(initial_max_path_id_);
-        }
-        if (no_verify_) {
-            cfg.no_verify(true);
-        }
-        // Additional local addresses to bind for extra multipath QUIC paths
-        // (path 0 is implicit/default; each entry here adds one more path,
-        // mirroring the example clients' repeatable -A/--address flag).
-        for (const std::string& addr : client_addresses_) {
-            cfg.address(addr);
-        }
-        if (!cfg.valid()) {
-            spdlog::get("illixr")->critical("[biphony_network_backend] invalid client config: {}",
-                                             biphony::last_error_message());
-            throw std::runtime_error("biphony_network_backend: invalid client config");
-        }
-
-        client_engine_ = std::make_unique<biphony::Client>(std::move(cfg)); // blocks until all paths validated
-        if (!client_engine_->valid()) {
-            spdlog::get("illixr")->critical("[biphony_network_backend] connect failed: {}",
-                                             biphony::last_error_message());
-            throw std::runtime_error("biphony_network_backend: connect failed");
-        }
-        spdlog::get("illixr")->info("[biphony_network_backend] connected to {}", connect_url);
-
-        read_thread_ = std::thread([this]() {
-            run_read_loop(*client_engine_);
-        });
-
-        // Tell the server we're here so it's safe for it to start sending
-        // (see peer_connected_ comment in plugin.hpp). Framed the same way
-        // as any other message so run_read_loop's ordinary unframing parses
-        // out HELLO_TOPIC and short-circuits before reaching topic_receive.
-        send_raw(*client_engine_, /*peer_client_id=*/0, HELLO_TOPIC, /*message=*/"", /*biphony_priority=*/0);
+        start_client();
     } else {
-        client          = false;
-        next_stream_id_ = 1; // server-initiated bidi streams: 1, 5, 9, ...
-
-        biphony::ServerConfig cfg(server_address_, cert_path_, key_path_);
-        cfg.idle_timeout(idle_timeout_ms_);
-        if (!steering_scheme_.empty()) {
-            cfg.steering_scheme(steering_scheme_);
-        }
-        if (initial_max_path_id_ != 0) {
-            cfg.initial_max_path_id(initial_max_path_id_);
-        }
-        if (!cfg.valid()) {
-            spdlog::get("illixr")->critical("[biphony_network_backend] invalid server config: {}",
-                                             biphony::last_error_message());
-            throw std::runtime_error("biphony_network_backend: invalid server config");
-        }
-
-        server_engine_ = std::make_unique<biphony::Server>(std::move(cfg)); // blocks until socket bound
-        if (!server_engine_->valid()) {
-            spdlog::get("illixr")->critical("[biphony_network_backend] listen failed: {}",
-                                             biphony::last_error_message());
-            throw std::runtime_error("biphony_network_backend: listen failed");
-        }
-        spdlog::get("illixr")->info("[biphony_network_backend] listening on {}", server_address_);
-
-        read_thread_ = std::thread([this]() {
-            run_read_loop(*server_engine_);
-        });
+        start_server();
     }
+}
+
+void biphony_network_backend::start_client() {
+    client           = true;
+    next_stream_id_  = 0; // client-initiated bidi streams: 0, 4, 8, ...
+
+    // biphony::ClientConfig expects a URL, not a bare socket address.
+    std::string connect_url = "https://" + server_address_ + "/";
+    biphony::ClientConfig cfg(connect_url);
+    cfg.idle_timeout(idle_timeout_ms_);
+    if (!steering_scheme_.empty()) {
+        cfg.steering_scheme(steering_scheme_);
+    }
+    if (initial_max_path_id_ != 0) {
+        cfg.initial_max_path_id(initial_max_path_id_);
+    }
+    if (no_verify_) {
+        cfg.no_verify(true);
+    }
+    // Additional local addresses to bind for extra multipath QUIC paths
+    // (path 0 is implicit/default; each entry here adds one more path,
+    // mirroring the example clients' repeatable -A/--address flag).
+    for (const std::string& addr : client_addresses_) {
+        cfg.address(addr);
+    }
+    if (!cfg.valid()) {
+        spdlog::get("illixr")->critical("[biphony_network_backend] invalid client config: {}",
+                                         biphony::last_error_message());
+        throw std::runtime_error("biphony_network_backend: invalid client config");
+    }
+
+    client_engine_ = std::make_unique<biphony::Client>(std::move(cfg)); // blocks until all paths validated
+    if (!client_engine_->valid()) {
+        spdlog::get("illixr")->critical("[biphony_network_backend] connect failed: {}",
+                                         biphony::last_error_message());
+        throw std::runtime_error("biphony_network_backend: connect failed");
+    }
+    spdlog::get("illixr")->info("[biphony_network_backend] connected to {}", connect_url);
+
+    read_thread_ = std::thread([this]() {
+        run_read_loop(*client_engine_);
+    });
+
+    // Tell the server we're here so it's safe for it to start sending
+    // (see peer_connected_ comment in plugin.hpp). Framed the same way
+    // as any other message so run_read_loop's ordinary unframing parses
+    // out HELLO_TOPIC and short-circuits before reaching topic_receive.
+    send_raw(*client_engine_, /*peer_client_id=*/0, HELLO_TOPIC, /*message=*/"", /*biphony_priority=*/0);
+}
+
+void biphony_network_backend::start_server() {
+    client          = false;
+    next_stream_id_ = 1; // server-initiated bidi streams: 1, 5, 9, ...
+
+    biphony::ServerConfig cfg(server_address_, cert_path_, key_path_);
+    cfg.idle_timeout(idle_timeout_ms_);
+    if (!steering_scheme_.empty()) {
+        cfg.steering_scheme(steering_scheme_);
+    }
+    if (initial_max_path_id_ != 0) {
+        cfg.initial_max_path_id(initial_max_path_id_);
+    }
+    if (!cfg.valid()) {
+        spdlog::get("illixr")->critical("[biphony_network_backend] invalid server config: {}",
+                                         biphony::last_error_message());
+        throw std::runtime_error("biphony_network_backend: invalid server config");
+    }
+
+    server_engine_ = std::make_unique<biphony::Server>(std::move(cfg)); // blocks until socket bound
+    if (!server_engine_->valid()) {
+        spdlog::get("illixr")->critical("[biphony_network_backend] listen failed: {}",
+                                         biphony::last_error_message());
+        throw std::runtime_error("biphony_network_backend: listen failed");
+    }
+    spdlog::get("illixr")->info("[biphony_network_backend] listening on {}", server_address_);
+
+    read_thread_ = std::thread([this]() {
+        run_read_loop(*server_engine_);
+    });
 }
 
 biphony_network_backend::~biphony_network_backend() {
@@ -276,6 +284,7 @@ void biphony_network_backend::topic_receive(const std::string& topic_name, std::
             network::topic_config config;
             config.serialization_method =
                 (serialization == "BOOST") ? network::topic_config::BOOST : network::topic_config::PROTOBUF;
+            config.transport_method = network::topic_config::BIPHONY;
             {
                 std::lock_guard<std::mutex> lock(topics_mutex_);
                 networked_topics_.push_back(l_topic_name);
@@ -317,8 +326,10 @@ void biphony_network_backend::stop() {
 }
 
 extern "C" MY_EXPORT_API plugin* this_plugin_factory(phonebook* pb) {
-    auto plugin_ptr = std::make_shared<biphony_network_backend>("biphony_network_backend", pb);
-    pb->register_impl<network::network_backend>(plugin_ptr);
-    auto* obj = plugin_ptr.get();
+    auto* obj = new biphony_network_backend("biphony_network_backend", pb);
+    // The runtime owns the plugin returned by this factory. Register a non-owning
+    // service alias so the phonebook does not try to delete the same object again.
+    pb->register_impl<network::biphony_backend>(std::shared_ptr<network::biphony_backend>(
+        static_cast<network::biphony_backend*>(obj), [](network::biphony_backend*) { }));
     return obj;
 }

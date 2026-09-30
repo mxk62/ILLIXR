@@ -181,6 +181,7 @@ profiles:
   - offload_vio_device_monado_biphony:
     plugins: offline_imu,offline_cam,gtsam_integrator,pose_prediction,timewarp_vk.monado,biphony_network_backend,offload_vio.device_rx,offload_vio.device_tx
     env_vars:
+      illixr_offload_vio_transport: biphony
       enable_offload: false
       enable_alignment: false
       enable_verbose_errors: false
@@ -189,6 +190,7 @@ profiles:
   - offload_vio_server_biphony:
     plugins: biphony_network_backend,offload_vio.server_rx,offload_vio.server_tx,openvins
     env_vars:
+      illixr_offload_vio_transport: biphony
       enable_offload: false
       enable_alignment: false
       enable_verbose_errors: false

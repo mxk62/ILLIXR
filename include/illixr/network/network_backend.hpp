@@ -59,4 +59,11 @@ struct tcp_backend : public network_backend { };
  */
 struct udp_backend : public network_backend { };
 
+/**
+ * @brief Phonebook registration key for the Biphony (multipath QUIC) network backend.
+ *
+ * Plugins that want Biphony transport register themselves under this tag.
+ */
+struct biphony_backend : public network_backend { };
+
 } // namespace ILLIXR::network

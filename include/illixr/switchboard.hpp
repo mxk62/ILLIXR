@@ -899,8 +899,9 @@ public:
      * @brief Obtain a network_writer for the given topic.
      *
      * Selects the backend based on config.transport_method:
-     *   - TransportMethod::TCP  -> looks up tcp_network_backend_tag
-     *   - TransportMethod::UDP  -> looks up udp_network_backend_tag
+     *   - TransportMethod::TCP     -> looks up network::tcp_backend
+     *   - TransportMethod::UDP     -> looks up network::udp_backend
+     *   - TransportMethod::BIPHONY -> looks up network::biphony_backend
      *
      * If the requested backend has not been registered (e.g., the UDP plugin
      * was not loaded) a runtime_error is thrown with a descriptive message.
@@ -921,6 +922,14 @@ public:
                 throw std::runtime_error("[switchboard] UDP transport requested for topic '" + topic_name +
                                          "' but no UDP network backend is registered in the phonebook. "
                                          "Ensure the udp_network_backend plugin is loaded before this writer is constructed.");
+            }
+            break;
+        case network::topic_config::TransportMethod::BIPHONY:
+            backend = phonebook_->lookup_impl<network::biphony_backend>();
+            if (!backend) {
+                throw std::runtime_error("[switchboard] Biphony transport requested for topic '" + topic_name +
+                                         "' but no Biphony network backend is registered in the phonebook. "
+                                         "Ensure the biphony_network_backend plugin is loaded before this writer is constructed.");
             }
             break;
         case network::topic_config::TransportMethod::TCP:

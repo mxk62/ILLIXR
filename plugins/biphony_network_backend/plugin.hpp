@@ -20,13 +20,12 @@ namespace ILLIXR {
 /**
  * Implements network::network_backend on top of Biphony, a QUIC-based
  * multipath transport, as a drop-in alternative transport to
- * tcp_network_backend. Exactly one of the two may be registered per process
- * (phonebook::register_impl asserts against duplicate registration of the
- * same service interface).
+ * tcp_network_backend. Registered in the phonebook as network::biphony_backend,
+ * so topics select it with topic_config::TransportMethod::BIPHONY.
  */
 class MY_EXPORT_API biphony_network_backend
     : public plugin
-    , public network::network_backend {
+    , public network::biphony_backend {
 public:
     explicit biphony_network_backend(const std::string& name_, phonebook* pb_);
     ~biphony_network_backend() override;
@@ -35,7 +34,13 @@ public:
     bool is_topic_networked(std::string topic_name) override;
     void topic_send(std::string topic_name, std::string&& message) override;
     void topic_receive(const std::string& topic_name, std::vector<char>& message);
+    void start_client() override;
+    void start_server() override;
     void stop() override;
+
+    network::topic_config::TransportMethod transport_method() const override {
+        return network::topic_config::TransportMethod::BIPHONY;
+    }
 
     bool client;
 

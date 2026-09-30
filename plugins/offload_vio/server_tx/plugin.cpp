@@ -2,6 +2,7 @@
 
 #include "illixr/network/net_config.hpp"
 #include "illixr/network/tcpsocket.hpp"
+#include "illixr/network/topic_config.hpp"
 #include "illixr/phonebook.hpp"
 #include "illixr/switchboard.hpp"
 // if the header exists, we are good; if not generate a stub class for IDEs to reduce on-screen errors
@@ -22,7 +23,9 @@ using namespace ILLIXR::data_format;
     , switchboard_{phonebook_->lookup_impl<switchboard>()}
     , imu_int_input_{switchboard_->get_reader<imu_integrator_input>("imu_integrator_input")}
     , vio_pose_writer_{switchboard_->get_network_writer<switchboard::event_wrapper<std::string>>(
-          "vio_pose", network::topic_config{network::topic_config::SerializationMethod::PROTOBUF})} {
+          "vio_pose",
+          network::topic_config{network::topic_config::SerializationMethod::PROTOBUF,
+                                network::parse_transport_method(switchboard_->get_env("ILLIXR_OFFLOAD_VIO_TRANSPORT"))})} {
     spdlogger(switchboard_->get_env_char("OFFLOAD_VIO_LOG_LEVEL"));
 }
 
