@@ -1,0 +1,11 @@
+--- ov_msckf/src/utils/parse_cmd.h
++++ ov_msckf/src/utils/parse_cmd.h
+@@ -243,7 +243,7 @@ namespace ov_msckf {
+             params.camera_fisheye.insert({i, p_fish.at(i)});
+             params.camera_intrinsics.insert({i, intrinsics});
+             params.camera_extrinsics.insert({i, extrinsics});
+-            params.camera_wh.insert({i, {p_wh.at(i).at(0),p_wh.at(i).at(1)}});
++            params.camera_wh.insert({(size_t)i, {p_wh.at(i).at(0),p_wh.at(i).at(1)}});
+
+         }
+
