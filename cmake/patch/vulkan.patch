@@ -1,0 +1,19 @@
+--- CMakeLists.txt	2026-10-14 06:43:15.211013842 -0400
++++ CMakeLists.txt.new	2026-10-14 06:46:13.575148693 -0400
+@@ -74,8 +74,15 @@
+     if(NOT SPIRV-Headers_FOUND)
+         pkg_check_modules(SPIRV-Headers REQUIRED SPIRV-Headers>=1.5.5)
+     endif()
++endif()
+ 
+-    build_ext_project(SPIRV-Tools -DSPIRV_TOOLS_BUILD_STATIC=ON -DSPIRV-Headers_SOURCE_DIR=${CMAKE_SOURCE_DIR}/SPIRV-Headers -DINSTALL_GTEST=OFF -DBUILD_TESTING=OFF -DSPIRV_SKIP_TESTS=ON)
++# SPIRV-Tools must be checked/built independently of SPIRV-Headers: they are
++# separate packages, and Vulkan-ValidationLayers below needs SPIRV-Tools-opt
++# regardless of whether SPIRV-Headers happened to already be present on the
++# system (e.g. via a distro spirv-headers package).
++find_package(SPIRV-Tools QUIET)
++if (NOT SPIRV-Tools_FOUND)
++    build_ext_project(SPIRV-Tools -DSPIRV_TOOLS_BUILD_STATIC=ON -DSPIRV-Headers_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/SPIRV-Headers -DINSTALL_GTEST=OFF -DBUILD_TESTING=OFF -DSPIRV_SKIP_TESTS=ON)
+     find_package(SPIRV-Tools REQUIRED)
+ endif()
+ 
