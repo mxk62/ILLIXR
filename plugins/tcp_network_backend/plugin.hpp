@@ -3,11 +3,14 @@
 #include "illixr/network/tcpsocket.hpp"
 // clang-format on
 
+#include "illixr/network/latency_instrumentation.hpp"
 #include "illixr/network/network_backend.hpp"
 #include "illixr/network/topic_config.hpp"
 #include "illixr/plugin.hpp"
 #include "illixr/switchboard.hpp"
 
+#include <chrono>
+#include <cstdint>
 #include <mutex>
 #include <thread>
 
@@ -36,7 +39,7 @@ public:
     void topic_create(std::string topic_name, network::topic_config& config) override;
     bool is_topic_networked(std::string topic_name) override;
     void topic_send(std::string topic_name, std::string&& message) override;
-    void topic_receive(const std::string& topic_name, std::vector<char>& message);
+    void topic_receive(const std::string& topic_name, std::vector<char>& message, uint64_t seq);
     /** Interrupt blocking socket I/O, join the worker, and release the peer. */
     void stop() override;
 
@@ -47,10 +50,20 @@ public:
     bool client;
 
 private:
-    void send_to_peer(const std::string& topic_name, std::string&& message);
+    // Returns the sequence number embedded in the frame, so callers that
+    // need to correlate an RTT ack (topic_send) can record it.
+    uint64_t send_to_peer(const std::string& topic_name, std::string&& message);
 
     std::shared_ptr<switchboard> switchboard_;
     std::atomic<bool>            running_ = true;
+
+    // Round-trip network latency instrumentation (see ILLIXR_LATENCY_CSV in
+    // the README). rtt_logger_ is disabled (all calls no-op) unless that env
+    // var is set.
+    network::rtt_csv_logger               rtt_logger_;
+    network::pending_send_tracker         pending_sends_;
+    std::atomic<uint64_t>                 next_seq_{0};
+    std::chrono::steady_clock::time_point start_time_;
 #ifndef __ANDROID__
     std::atomic<bool> ready_ = false;
 #endif

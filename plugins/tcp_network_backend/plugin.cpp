@@ -1,14 +1,24 @@
 #include "plugin.hpp"
 
+#include <cstdlib>
 #include <cstring>
 
 static constexpr uint32_t MAX_PACKET_BYTES = 256u * 1024u * 1024u;
 
 using namespace ILLIXR;
 
+namespace {
+std::string env_or_empty(const char* name) {
+    const char* v = std::getenv(name);
+    return v ? std::string(v) : std::string();
+}
+} // namespace
+
 tcp_network_backend::tcp_network_backend(const std::string& name_, phonebook* pb_)
     : plugin(name_, pb_)
-    , switchboard_{pb_->lookup_impl<switchboard>()} {
+    , switchboard_{pb_->lookup_impl<switchboard>()}
+    , rtt_logger_{env_or_empty("ILLIXR_LATENCY_CSV")}
+    , start_time_{std::chrono::steady_clock::now()} {
     // read environment variables
     if (switchboard_->get_env_char("ILLIXR_SERVER_IP")) {
         server_ip_ = switchboard_->get_env_char("ILLIXR_SERVER_IP");
@@ -179,7 +189,8 @@ void tcp_network_backend::read_loop(network::TCPSocket* socket) {
             uint32_t topic_name_length;
             std::memcpy(&total_length, buffer.data(), sizeof(total_length));
             std::memcpy(&topic_name_length, buffer.data() + 4, sizeof(topic_name_length));
-            if (total_length < 8 || total_length > MAX_PACKET_BYTES || topic_name_length > total_length - 8) {
+            if (total_length < 8 + network::SEQ_WIRE_SIZE || total_length > MAX_PACKET_BYTES ||
+                topic_name_length > total_length - 8 - network::SEQ_WIRE_SIZE) {
                 spdlog::get("illixr")->error("[tcp_network_backend] malformed packet header (total_length={}, "
                                              "topic_name_length={}, buffered={} B) -- stream is desynced, "
                                              "closing the read loop",
@@ -189,10 +200,16 @@ void tcp_network_backend::read_loop(network::TCPSocket* socket) {
             }
 
             if (buffer.size() >= total_length) {
-                std::string       topic_name(buffer.data() + 8, topic_name_length);
-                std::vector<char> message(buffer.begin() + 8 + topic_name_length, buffer.begin() + total_length);
+                std::string topic_name(buffer.data() + 8, topic_name_length);
+
+                size_t   seq_offset = 8 + topic_name_length;
+                uint64_t seq;
+                std::memcpy(&seq, buffer.data() + seq_offset, network::SEQ_WIRE_SIZE);
+
+                size_t            message_offset = seq_offset + network::SEQ_WIRE_SIZE;
+                std::vector<char> message(buffer.begin() + message_offset, buffer.begin() + total_length);
                 try {
-                    topic_receive(topic_name, message);
+                    topic_receive(topic_name, message, seq);
                 } catch (const std::exception& error) {
                     spdlog::get("illixr")->error(
                         "[tcp_network_backend] Failed to deserialize topic={} bytes={}: {}; restart the session", topic_name,
@@ -231,11 +248,33 @@ void tcp_network_backend::topic_send(std::string topic_name, std::string&& messa
         std::cout << "Topic not networked" << std::endl;
         return;
     }
-    send_to_peer(topic_name, std::move(message));
+
+    bool     track   = rtt_logger_.enabled();
+    auto     sent_at = std::chrono::steady_clock::now();
+    size_t   bytes   = message.size();
+    uint64_t seq     = send_to_peer(topic_name, std::move(message));
+    if (track) {
+        pending_sends_.record(seq, network::pending_send_info{sent_at, topic_name, bytes});
+    }
 }
 
 // Helper function to queue a received message into the corresponding topic
-void tcp_network_backend::topic_receive(const std::string& topic_name, std::vector<char>& message) {
+void tcp_network_backend::topic_receive(const std::string& topic_name, std::vector<char>& message, uint64_t seq) {
+    if (topic_name == network::LATENCY_ACK_TOPIC) {
+        if (message.size() >= 8) {
+            uint64_t acked_seq;
+            std::memcpy(&acked_seq, message.data(), 8);
+            network::pending_send_info info;
+            if (pending_sends_.complete(acked_seq, info)) {
+                auto   now     = std::chrono::steady_clock::now();
+                double rtt_ms  = std::chrono::duration<double, std::milli>(now - info.sent_at).count();
+                double send_ms = std::chrono::duration<double, std::milli>(info.sent_at - start_time_).count();
+                rtt_logger_.log(acked_seq, info.topic_name, info.bytes, send_ms, rtt_ms);
+            }
+        }
+        return;
+    }
+
     if (topic_name == "illixr_control") {
         std::string message_str(message.begin(), message.end());
         // check if message starts with "create_topic"
@@ -260,10 +299,19 @@ void tcp_network_backend::topic_receive(const std::string& topic_name, std::vect
     if (!switchboard_->topic_exists(topic_name)) {
         return;
     }
+
+    if (rtt_logger_.enabled()) {
+        std::string ack_payload;
+        ack_payload.resize(8);
+        std::memcpy(ack_payload.data(), &seq, 8);
+        send_to_peer(network::LATENCY_ACK_TOPIC, std::move(ack_payload));
+    }
+
     switchboard_->get_topic(topic_name).deserialize_and_put(message, networked_topics_configs_[topic_name]);
 }
 
 void tcp_network_backend::stop() {
+    rtt_logger_.flush();
     std::lock_guard<std::mutex> lock{stop_mutex_};
     // shutdown() wakes read_loop without invalidating the descriptor; deletion
     // is deferred until the owning thread has returned. A read/send failure may
@@ -284,18 +332,25 @@ tcp_network_backend::~tcp_network_backend() {
     stop();
 }
 
-void tcp_network_backend::send_to_peer(const std::string& topic_name, std::string&& message) {
+uint64_t tcp_network_backend::send_to_peer(const std::string& topic_name, std::string&& message) {
     // packet are in the format
-    // total_length:4bytes|topic_name_length:4bytes|topic_name|message
-    uint32_t    total_length = 8 + topic_name.size() + message.size();
+    // total_length:4bytes|topic_name_length:4bytes|topic_name|seq:8bytes|message
+    uint64_t seq = next_seq_.fetch_add(1);
+
+    uint32_t    total_length = 8 + network::SEQ_WIRE_SIZE + topic_name.size() + message.size();
     std::string packet;
     packet.append(reinterpret_cast<char*>(&total_length), 4);
     uint32_t topic_name_length = topic_name.size();
     packet.append(reinterpret_cast<char*>(&topic_name_length), 4);
     packet.append(topic_name);
+
+    char seq_bytes[network::SEQ_WIRE_SIZE];
+    std::memcpy(seq_bytes, &seq, network::SEQ_WIRE_SIZE);
+    packet.append(seq_bytes, network::SEQ_WIRE_SIZE);
+
     packet.append(message.begin(), message.end());
     if (!running_)
-        return;
+        return seq;
     try {
         std::lock_guard<std::mutex> lock{send_mutex_};
         peer_socket_->write_data(packet);
@@ -304,6 +359,7 @@ void tcp_network_backend::send_to_peer(const std::string& topic_name, std::strin
         spdlog::get("illixr")->error("[tcp_network_backend] TCP send failed for topic={}: {}; restart the session", topic_name,
                                      error.what());
     }
+    return seq;
 }
 
 extern "C" MY_EXPORT_API plugin* this_plugin_factory(phonebook* pb) {

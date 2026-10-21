@@ -11,6 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 add_library(${PLUGIN_NAME} SHARED plugin.cpp
             plugin.hpp
+            ${CMAKE_SOURCE_DIR}/include/illixr/network/latency_instrumentation.hpp
             ${CMAKE_SOURCE_DIR}/include/illixr/network/network_backend.hpp
             ${CMAKE_SOURCE_DIR}/include/illixr/network/topic_config.hpp
             ${CMAKE_SOURCE_DIR}/include/illixr/phonebook.hpp

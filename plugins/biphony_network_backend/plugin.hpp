@@ -1,5 +1,6 @@
 #pragma once
 
+#include "illixr/network/latency_instrumentation.hpp"
 #include "illixr/network/network_backend.hpp"
 #include "illixr/network/topic_config.hpp"
 #include "illixr/plugin.hpp"
@@ -7,6 +8,8 @@
 
 #include <atomic>
 #include <biphony.hpp>
+#include <chrono>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -32,7 +35,7 @@ public:
     void topic_create(std::string topic_name, network::topic_config& config) override;
     bool is_topic_networked(std::string topic_name) override;
     void topic_send(std::string topic_name, std::string&& message) override;
-    void topic_receive(const std::string& topic_name, std::vector<char>& message);
+    void topic_receive(const std::string& topic_name, std::vector<char>& message, uint64_t seq);
     void start_client() override;
     void start_server() override;
     void stop() override;
@@ -47,11 +50,14 @@ private:
     template<typename Engine>
     void run_read_loop(Engine& engine);
 
+    // Returns the sequence number embedded in the frame.
     template<typename Engine>
-    bool send_raw(Engine& engine, uint64_t peer_client_id, const std::string& topic_name, const std::string& message,
-                  uint8_t biphony_priority);
+    uint64_t send_raw(Engine& engine, uint64_t peer_client_id, const std::string& topic_name, const std::string& message,
+                      uint8_t biphony_priority);
 
-    void send_to_peer(const std::string& topic_name, std::string&& message, network::topic_config::priority_type priority);
+    // Returns the sequence number embedded in the frame, so callers that
+    // need to correlate an RTT ack (topic_send) can record it.
+    uint64_t send_to_peer(const std::string& topic_name, std::string&& message, network::topic_config::priority_type priority);
 
     // Maps ILLIXR's topic_config::priority_type (higher enum value = more
     // urgent) onto Biphony/QUIC's HTTP/3 extensible-priority "urgency"
@@ -103,6 +109,14 @@ private:
     std::mutex                                             topics_mutex_;
     std::vector<std::string>                               networked_topics_;
     std::unordered_map<std::string, network::topic_config> networked_topics_configs_;
+
+    // Round-trip network latency instrumentation (see ILLIXR_LATENCY_CSV in
+    // the README). rtt_logger_ is disabled (all calls no-op) unless that env
+    // var is set.
+    network::rtt_csv_logger               rtt_logger_;
+    network::pending_send_tracker         pending_sends_;
+    std::atomic<uint64_t>                 next_seq_{0};
+    std::chrono::steady_clock::time_point start_time_;
 
     // env-derived configuration
     bool is_client_ = false;

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 
@@ -16,6 +17,11 @@ namespace {
 // after connecting, so the server knows it's safe to start sending (see the
 // peer_connected_ comment in plugin.hpp).
 const std::string HELLO_TOPIC = "illixr_hello";
+
+std::string env_or_empty(const char* name) {
+    const char* v = std::getenv(name);
+    return v ? std::string(v) : std::string();
+}
 
 std::vector<std::string> split_comma_separated(const std::string& value) {
     std::vector<std::string> parts;
@@ -37,7 +43,9 @@ std::vector<std::string> split_comma_separated(const std::string& value) {
 
 biphony_network_backend::biphony_network_backend(const std::string& name_, phonebook* pb_)
     : plugin(name_, pb_)
-    , switchboard_{pb_->lookup_impl<switchboard>()} {
+    , switchboard_{pb_->lookup_impl<switchboard>()}
+    , rtt_logger_{env_or_empty("ILLIXR_LATENCY_CSV")}
+    , start_time_{std::chrono::steady_clock::now()} {
     // Surfaces engine-internal errors (e.g. stream_send failures) that would
     // otherwise be silently discarded, since Biphony's FFI never installs a
     // log backend on its own. Controlled by RUST_LOG (e.g. RUST_LOG=quiche_apps=debug).
@@ -164,37 +172,42 @@ uint8_t biphony_network_backend::map_priority(network::topic_config::priority_ty
 }
 
 template<typename Engine>
-bool biphony_network_backend::send_raw(Engine& engine, uint64_t peer_client_id, const std::string& topic_name,
-                                       const std::string& message, uint8_t biphony_priority) {
-    // Wire payload: topic_name_length:4B (uint32) | topic_name | message
+uint64_t biphony_network_backend::send_raw(Engine& engine, uint64_t peer_client_id, const std::string& topic_name,
+                                           const std::string& message, uint8_t biphony_priority) {
+    // Wire payload: topic_name_length:4B (uint32) | topic_name | seq:8B |
+    // message
     // No outer total_length prefix is needed (unlike tcp_network_backend's
     // hand-rolled byte-stream framing): Biphony already delivers one complete
     // logical message per recv() call.
-    std::vector<uint8_t> packet(4 + topic_name.size() + message.size());
+    uint64_t seq = next_seq_.fetch_add(1);
+
+    std::vector<uint8_t> packet(4 + topic_name.size() + network::SEQ_WIRE_SIZE + message.size());
     uint32_t             topic_name_length = static_cast<uint32_t>(topic_name.size());
     std::memcpy(packet.data(), &topic_name_length, 4);
     std::memcpy(packet.data() + 4, topic_name.data(), topic_name.size());
-    std::memcpy(packet.data() + 4 + topic_name.size(), message.data(), message.size());
+    std::memcpy(packet.data() + 4 + topic_name.size(), &seq, network::SEQ_WIRE_SIZE);
+    std::memcpy(packet.data() + 4 + topic_name.size() + network::SEQ_WIRE_SIZE, message.data(), message.size());
 
     uint64_t stream_id = next_stream_id_.fetch_add(4);
-    return engine.try_send(peer_client_id, stream_id, packet, /*fin=*/true, biphony_priority);
+    (void) engine.try_send(peer_client_id, stream_id, packet, /*fin=*/true, biphony_priority);
+    return seq;
 }
 
-void biphony_network_backend::send_to_peer(const std::string& topic_name, std::string&& message,
-                                           network::topic_config::priority_type priority) {
+uint64_t biphony_network_backend::send_to_peer(const std::string& topic_name, std::string&& message,
+                                               network::topic_config::priority_type priority) {
     uint8_t prio = map_priority(priority);
     if (client) {
         // biphony::Client only ever talks to one server; the client_id
         // argument is ignored on the client side.
-        send_raw(*client_engine_, /*peer_client_id=*/0, topic_name, message, prio);
+        return send_raw(*client_engine_, /*peer_client_id=*/0, topic_name, message, prio);
     } else {
         while (!peer_connected_ && running_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
         if (!running_) {
-            return;
+            return 0;
         }
-        send_raw(*server_engine_, SERVER_CLIENT_ID, topic_name, message, prio);
+        return send_raw(*server_engine_, SERVER_CLIENT_ID, topic_name, message, prio);
     }
 }
 
@@ -217,11 +230,16 @@ void biphony_network_backend::run_read_loop(Engine& engine) {
         }
         uint32_t topic_name_length;
         std::memcpy(&topic_name_length, msg.data.data(), 4);
-        if (msg.data.size() < 4 + topic_name_length) {
+        if (msg.data.size() < 4 + topic_name_length + network::SEQ_WIRE_SIZE) {
             continue;
         }
 
         std::string topic_name(msg.data.begin() + 4, msg.data.begin() + 4 + topic_name_length);
+
+        size_t   seq_offset = 4 + topic_name_length;
+        uint64_t seq;
+        std::memcpy(&seq, msg.data.data() + seq_offset, network::SEQ_WIRE_SIZE);
+        size_t message_offset = seq_offset + network::SEQ_WIRE_SIZE;
 
         if (!client && topic_name == HELLO_TOPIC) {
             peer_connected_ = true;
@@ -229,8 +247,8 @@ void biphony_network_backend::run_read_loop(Engine& engine) {
             continue;
         }
 
-        std::vector<char> message(msg.data.begin() + 4 + topic_name_length, msg.data.end());
-        topic_receive(topic_name, message);
+        std::vector<char> message(msg.data.begin() + message_offset, msg.data.end());
+        topic_receive(topic_name, message, seq);
     }
 }
 
@@ -264,10 +282,32 @@ void biphony_network_backend::topic_send(std::string topic_name, std::string&& m
         }
         priority = networked_topics_configs_[topic_name].priority;
     }
-    send_to_peer(topic_name, std::move(message), priority);
+
+    bool     track   = rtt_logger_.enabled();
+    auto     sent_at = std::chrono::steady_clock::now();
+    size_t   bytes   = message.size();
+    uint64_t seq     = send_to_peer(topic_name, std::move(message), priority);
+    if (track) {
+        pending_sends_.record(seq, network::pending_send_info{sent_at, topic_name, bytes});
+    }
 }
 
-void biphony_network_backend::topic_receive(const std::string& topic_name, std::vector<char>& message) {
+void biphony_network_backend::topic_receive(const std::string& topic_name, std::vector<char>& message, uint64_t seq) {
+    if (topic_name == network::LATENCY_ACK_TOPIC) {
+        if (message.size() >= 8) {
+            uint64_t acked_seq;
+            std::memcpy(&acked_seq, message.data(), 8);
+            network::pending_send_info info;
+            if (pending_sends_.complete(acked_seq, info)) {
+                auto   now     = std::chrono::steady_clock::now();
+                double rtt_ms  = std::chrono::duration<double, std::milli>(now - info.sent_at).count();
+                double send_ms = std::chrono::duration<double, std::milli>(info.sent_at - start_time_).count();
+                rtt_logger_.log(acked_seq, info.topic_name, info.bytes, send_ms, rtt_ms);
+            }
+        }
+        return;
+    }
+
     if (topic_name == CONTROL_TOPIC) {
         std::string message_str(message.begin(), message.end());
         if (message_str.find("create_topic") == 0) {
@@ -294,6 +334,13 @@ void biphony_network_backend::topic_receive(const std::string& topic_name, std::
         return;
     }
 
+    if (rtt_logger_.enabled()) {
+        std::string ack_payload;
+        ack_payload.resize(8);
+        std::memcpy(ack_payload.data(), &seq, 8);
+        send_to_peer(network::LATENCY_ACK_TOPIC, std::move(ack_payload), network::topic_config::MEDIUM);
+    }
+
     network::topic_config cfg;
     {
         std::lock_guard<std::mutex> lock(topics_mutex_);
@@ -303,6 +350,7 @@ void biphony_network_backend::topic_receive(const std::string& topic_name, std::
 }
 
 void biphony_network_backend::stop() {
+    rtt_logger_.flush();
     running_ = false;
     // close() signals shutdown AND unblocks the in-flight blocking recv() in
     // read_thread_, and joins Biphony's own internal engine thread before

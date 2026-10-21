@@ -82,6 +82,28 @@ A port on each machine should be specified for each of the network backend types
 
 The `ILLIXR_IS_CLIENT` environment variable is used to determine if the backend instance is running as the client (value = "1") or server (value = "0").
 
+### Network latency instrumentation
+
+`tcp_network_backend` and `biphony_network_backend` (not `udp_network_backend`) can measure
+round-trip network latency. Every message either backend sends over the wire carries a
+small sequence number, so the receiver can echo a tiny ack back to the sender. Set the
+following env var to turn on logging:
+```
+ILLIXR_LATENCY_CSV: Path to a CSV file, e.g. "metrics/tcp_latency.csv". When set, the
+  receiver of every real-topic message immediately acks it, and the original sender logs
+  one row per acked message: seq, topic_name, message_bytes, send_time_ms_since_start
+  (elapsed ms since this process started), rtt_ms. The file is flushed on plugin stop.
+  Unset (the default): no CSV output and no ack traffic; the sequence field is still
+  present in every frame regardless (both ends of the connection always run the same
+  protocol).
+```
+Round-trip time is measured entirely on the sender's own clock (steady clock, from send to
+ack receipt), so it needs no clock synchronization between hosts — it does include the
+receiver's own dispatch/ack-send time alongside pure network transit, i.e. it's an
+application-level round trip, not a raw wire-only echo. Because the receiver only acks when
+its own `rtt_logger_` is enabled, `ILLIXR_LATENCY_CSV` needs to be set on both the sending
+and receiving process to get numbers on the sender's side.
+
 ### Examples
 
 #### TCP with Protobuf

@@ -52,6 +52,10 @@ ILLIXR_BIPHONY_IDLE_TIMEOUT_MS: QUIC idle timeout in milliseconds (default: 6000
   before any real traffic ever flows.
 ```
 
+## Network latency instrumentation
+See "Network latency instrumentation" in `docs/docs/plugin_README/README_network_backends.md`
+for the `ILLIXR_LATENCY_CSV` env var this backend shares with `tcp_network_backend`.
+
 ## Priority mapping
 `topic_config::priority` is mapped onto Biphony/QUIC's HTTP/3 extensible-priority
 "urgency" (RFC 9218), where a LOWER numeric value means MORE urgent — the opposite of
