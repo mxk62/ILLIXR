@@ -28,13 +28,12 @@ set(BIPHONY_REPO "git@github.com:NSF-Breaking-Low-Agora/biphony_quiche.git")
 # Pinned to a specific commit (rather than a moving branch) for build
 # reproducibility. Update this as Biphony's FFI stabilizes.
 #
-# This is `issues/24` (FFI + logging-init) with the one-shot-stream-retirement
-# fix from `issues/26` (github.com/NSF-Breaking-Low-Agora/biphony/issues/26)
-# cherry-picked on top locally, since the two fixes live on separate branches
-# upstream and `issues/26` is still awaiting the Biphony author's review.
-# Once `issues/26` is reviewed and merged into a branch that already carries
-# the FFI, re-pin to that upstream commit instead of this local cherry-pick.
-set(BIPHONY_TAG  "177922bb0d633676c7c08583d96ec13a56fe3f6d")
+# This is the tip of `issues/24`: the C/C++ FFI (including
+# biphony_init_logging()) and the one-shot-stream-retirement fix, on top of
+# main. `issues/24` is periodically rebased onto main, which makes older pins
+# unreachable; when a fetch fails with "reference is not a tree", re-pin to
+# the branch's current tip.
+set(BIPHONY_TAG  "bfd2a8330b565068df5dc5253c48c46e3b4e2249")
 
 FetchContent_Declare(Biphony
                       GIT_REPOSITORY ${BIPHONY_REPO}
