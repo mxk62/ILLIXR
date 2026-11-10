@@ -26,7 +26,17 @@ using namespace ILLIXR::data_format;
           "vio_pose",
           network::topic_config{network::topic_config::SerializationMethod::PROTOBUF,
                                 network::parse_transport_method(switchboard_->get_env("ILLIXR_OFFLOAD_VIO_TRANSPORT"))})} {
-    spdlogger(switchboard_->get_env_char("OFFLOAD_VIO_LOG_LEVEL"));
+    diag_log_ = spdlogger(switchboard_->get_env_char("OFFLOAD_VIO_LOG_LEVEL"));
+    diag_reporter_.start(std::chrono::milliseconds(1000), [this]() {
+        Eigen::Vector3f pos;
+        {
+            std::lock_guard<std::mutex> lock(diag_mutex_);
+            pos = diag_last_pos_;
+        }
+        diag_log_->info(
+            "[DIAG][server_tx] slow_pose_in={} vio_pose_sent={} no_imu_int_input={} last_pos=({:.4f},{:.4f},{:.4f})",
+            diag_slow_pose_.load(), diag_sent_.load(), diag_no_imu_int_input_.load(), pos.x(), pos.y(), pos.z());
+    });
 }
 
 // This schedule function cant go in the constructor because there seems to be an issue with
@@ -41,6 +51,11 @@ void server_writer::start() {
 }
 
 void server_writer::send_vio_output(const switchboard::ptr<const pose::head_pose_type>& datum) {
+    diag_slow_pose_++;
+    {
+        std::lock_guard<std::mutex> lock(diag_mutex_);
+        diag_last_pos_ = datum->position;
+    }
     // Construct slow pose for output
     auto* protobuf_slow_pose = new vio_output_proto::SlowPose();
     protobuf_slow_pose->set_timestamp(datum->sensor_time.time_since_epoch().count());
@@ -60,6 +75,11 @@ void server_writer::send_vio_output(const switchboard::ptr<const pose::head_pose
 
     // Construct IMU integrator input for output
     switchboard::ptr<const imu_integrator_input> imu_int_input = imu_int_input_.get_ro_nullable();
+    if (imu_int_input == nullptr) {
+        // DIAG: the code below dereferences this unconditionally.
+        diag_no_imu_int_input_++;
+        diag_log_->error("[DIAG][server_tx] imu_integrator_input is null; the dereference below will crash");
+    }
 
     auto* protobuf_imu_int_input = new vio_output_proto::IMUIntInput();
     protobuf_imu_int_input->set_t_offset(imu_int_input->t_offset.count());
@@ -122,6 +142,7 @@ void server_writer::send_vio_output(const switchboard::ptr<const pose::head_pose
     std::string       data_to_be_sent = vio_output_params->SerializeAsString();
     const std::string delimiter       = "END!";
 
+    diag_sent_++;
     vio_pose_writer_.put(std::make_shared<switchboard::event_wrapper<std::string>>(data_to_be_sent + delimiter));
 
     delete vio_output_params;

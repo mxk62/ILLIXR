@@ -23,6 +23,12 @@ using namespace ILLIXR::data_format;
                                 network::parse_transport_method(switchboard_->get_env("ILLIXR_OFFLOAD_VIO_TRANSPORT"))})}
     , log_(spdlogger(switchboard_->get_env_char("OFFLOAD_VIO_LOG_LEVEL"))) {
     std::srand(std::time(0));
+    diag_reporter_.start(std::chrono::milliseconds(1000), [this]() {
+        log_->info("[DIAG][device_tx] imu={} cam_dequeued={} encoded={} sent={} bytes_sent={} blocked_in_encoder_wait_ms={} "
+                   "frame_id={}",
+                   diag_imu_.load(), diag_cam_dequeued_.load(), diag_encoded_.load(), diag_sent_.load(),
+                   diag_bytes_sent_.load(), diag_waiting_ms_.load(), frame_id_);
+    });
 }
 
 void offload_writer::start() {
@@ -36,6 +42,7 @@ void offload_writer::start() {
                 std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
                     .count();
         });
+        diag_encoded_++;
         {
             std::lock_guard<std::mutex> lock{mutex_};
             this->img0_ = img0;
@@ -69,6 +76,8 @@ void offload_writer::send_imu_cam_data(std::optional<time_point>& cam_time) {
     log_->info("{},{}", cam_time.value().time_since_epoch().count(),
                (double) (clock_->now().time_since_epoch().count() - cam_time.value().time_since_epoch().count()) / 1e6);
     // socket.write(data_to_be_sent + delimitter);
+    diag_sent_++;
+    diag_bytes_sent_ += data_to_be_sent.size() + delimiter.size();
     imu_cam_writer_.put(std::make_shared<switchboard::event_wrapper<std::string>>(data_to_be_sent + delimiter));
 
     frame_id_++;
@@ -83,6 +92,8 @@ void offload_writer::prepare_imu_cam_data(switchboard::ptr<const imu_type> datum
         assert(!latest_imu_time_);
         return;
     }
+
+    diag_imu_++;
 
     // Ensure that IMU data is received in the time order
     assert(datum->time > latest_imu_time_);
@@ -111,6 +122,7 @@ void offload_writer::prepare_imu_cam_data(switchboard::ptr<const imu_type> datum
 
     if (cam_.size() != 0 && !latest_cam_time_) {
         cam = cam_.dequeue();
+        diag_cam_dequeued_++;
 
         cv::Mat cam_img0      = (cam->at(image::LEFT_EYE)).clone();
         cv::Mat cam_img1      = (cam->at(image::RIGHT_EYE)).clone();
@@ -128,9 +140,21 @@ void offload_writer::prepare_imu_cam_data(switchboard::ptr<const imu_type> datum
         queue_.push(curr);
         std::unique_lock<std::mutex> lock{mutex_};
         encoder_->enqueue(cam_img0, cam_img1);
-        condition_var_.wait(lock, [this]() {
-            return img_ready_;
-        });
+        // DIAG: same wait as before, but report every 2 s while blocked.
+        {
+            auto wait_start = std::chrono::steady_clock::now();
+            while (!condition_var_.wait_for(lock, std::chrono::seconds(2), [this]() {
+                return img_ready_;
+            })) {
+                auto waited =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - wait_start)
+                        .count();
+                diag_waiting_ms_ = static_cast<uint64_t>(waited);
+                log_->error("[DIAG][device_tx] still waiting for encoder: {} ms, frame_id={} cam_dequeued={} encoded={}",
+                            waited, frame_id_, diag_cam_dequeued_.load(), diag_encoded_.load());
+            }
+            diag_waiting_ms_ = 0;
+        }
         img_ready_ = false;
 
         sizes_.push_back((int) this->img0_.size);

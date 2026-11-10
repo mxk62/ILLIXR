@@ -16,6 +16,9 @@
 #    include "../proto/input_stub.hpp"
 #endif
 
+#include "illixr/diag_stats.hpp"
+
+#include <atomic>
 #include <boost/lockfree/spsc_queue.hpp>
 
 namespace ILLIXR {
@@ -53,5 +56,14 @@ private:
     std::shared_ptr<spdlog::logger>                                      log_;
     network::TCPSocket                                                   socket_;
     std::string                                                          server_ip_;
+
+    // ---- Diagnostics ----
+    std::atomic<uint64_t>   diag_imu_{0};          // imu callbacks
+    std::atomic<uint64_t>   diag_cam_dequeued_{0}; // camera frames taken
+    std::atomic<uint64_t>   diag_encoded_{0};      // encoder callbacks
+    std::atomic<uint64_t>   diag_sent_{0};         // compressed_imu_cam messages put on the network writer
+    std::atomic<uint64_t>   diag_bytes_sent_{0};
+    std::atomic<uint64_t>   diag_waiting_ms_{0}; // > 0 while blocked waiting for the encoder
+    diag::periodic_reporter diag_reporter_;
 };
 } // namespace ILLIXR

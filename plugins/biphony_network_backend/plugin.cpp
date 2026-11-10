@@ -71,10 +71,31 @@ biphony_network_backend::biphony_network_backend(const std::string& name_, phone
         idle_timeout_ms_ = std::stoull(switchboard_->get_env_char("ILLIXR_BIPHONY_IDLE_TIMEOUT_MS"));
     }
 
+    // Started before connecting, so that a client blocked in connect still reports.
+    diag_reporter_.start(std::chrono::milliseconds(1000), [this]() {
+        diag_report();
+    });
+
     if (is_client_) {
         start_client();
     } else {
         start_server();
+    }
+}
+
+void biphony_network_backend::diag_report() {
+    auto                        log = spdlog::get("illixr");
+    std::lock_guard<std::mutex> lock(stats_mutex_);
+    log->info(
+        "[DIAG][biphony] role={} peer_connected={} peer_wait_ms={} recv_ok={} recv_empty={} recv_not_fin={} recv_malformed={} "
+        "recv_other_rc={} last_client_id={} client_id_flips={} running={}",
+        is_client_ ? "client" : "server", peer_connected_.load(), peer_wait_ms_.load(), recv_calls_ok_, recv_empty_,
+        recv_not_fin_, recv_malformed_, recv_other_rc_, last_client_id_, client_id_flips_, running_.load());
+    for (const auto& [topic, s] : stats_) {
+        log->info("[DIAG][biphony] topic={} sent={} refused={} bytes_sent={} received={} bytes_received={} out_of_order={} "
+                  "duplicate={} missing={} no_topic={} highest_seq={} awaiting_seq={} held={}",
+                  topic, s.sent, s.refused, s.bytes_sent, s.received, s.bytes_received, s.out_of_order, s.duplicate, s.missing,
+                  s.no_topic, s.highest_seq, s.awaiting_seq, s.held);
     }
 }
 
@@ -173,9 +194,10 @@ bool biphony_network_backend::send_raw(Engine& engine, uint64_t peer_client_id, 
     // No outer total_length prefix is needed (unlike tcp_network_backend's
     // hand-rolled byte-stream framing): Biphony already delivers one complete
     // logical message per recv() call.
-    std::lock_guard<std::mutex> seq_lock(send_seq_mutex_);
-    uint64_t&                   next_seq = next_send_seq_[topic_name];
-    uint64_t                    seq      = next_seq;
+    // (DIAG: that claim is checked by counting recv deliveries with fin == false.)
+    std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+    topic_stats&                stats = stats_[topic_name];
+    uint64_t                    seq   = stats.next_send_seq;
 
     std::vector<uint8_t> packet(4 + topic_name.size() + 8 + message.size());
     uint32_t             topic_name_length = static_cast<uint32_t>(topic_name.size());
@@ -187,7 +209,14 @@ bool biphony_network_backend::send_raw(Engine& engine, uint64_t peer_client_id, 
     uint64_t stream_id = next_stream_id_.fetch_add(4);
     bool     ok        = engine.try_send(peer_client_id, stream_id, packet, /*fin=*/true, biphony_priority);
     if (ok) {
-        next_seq++;
+        stats.next_send_seq++;
+        stats.sent++;
+        stats.bytes_sent += packet.size();
+    } else {
+        stats.refused++;
+        spdlog::get("illixr")->warn(
+            "[DIAG][biphony] try_send refused: topic={} seq={} size={} stream_id={} client_id={} error='{}'", topic_name, seq,
+            packet.size(), stream_id, peer_client_id, biphony::last_error_message());
     }
     return ok;
 }
@@ -202,6 +231,7 @@ void biphony_network_backend::send_to_peer(const std::string& topic_name, std::s
     } else {
         while (!peer_connected_ && running_) {
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            peer_wait_ms_ += 100;
         }
         if (!running_) {
             return;
@@ -221,21 +251,77 @@ void biphony_network_backend::run_read_loop(Engine& engine) {
             break;
         }
         if (rc != BIPHONY_OK) {
+            std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+            recv_other_rc_++;
             continue;
         }
 
-        if (msg.data.size() < 4) {
+        {
+            std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+            recv_calls_ok_++;
+            if (recv_calls_ok_ > 1 && msg.client_id != last_client_id_) {
+                client_id_flips_++;
+                spdlog::get("illixr")->warn("[DIAG][biphony] client_id changed {} -> {}", last_client_id_, msg.client_id);
+            }
+            last_client_id_ = msg.client_id;
+            if (!msg.fin) {
+                recv_not_fin_++;
+                if (recv_not_fin_ <= 20) {
+                    spdlog::get("illixr")->warn("[DIAG][biphony] recv delivered fin=false: stream_id={} size={} client_id={}",
+                                                msg.stream_id, msg.data.size(), msg.client_id);
+                }
+            }
+        }
+
+        if (msg.data.empty()) {
+            // The peer closing its write side of one of our streams (Biphony
+            // stream retirement) arrives as an empty message; not app data.
+            std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+            recv_empty_++;
             continue;
         }
-        uint32_t topic_name_length;
-        std::memcpy(&topic_name_length, msg.data.data(), 4);
-        if (msg.data.size() < 4 + static_cast<uint64_t>(topic_name_length) + 8) {
+
+        uint32_t topic_name_length = 0;
+        if (msg.data.size() >= 4) {
+            std::memcpy(&topic_name_length, msg.data.data(), 4);
+        }
+        if (msg.data.size() < 4 || msg.data.size() < 4 + static_cast<uint64_t>(topic_name_length) + 8) {
+            std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+            recv_malformed_++;
+            if (recv_malformed_ <= 20) {
+                spdlog::get("illixr")->warn(
+                    "[DIAG][biphony] malformed message: stream_id={} size={} fin={} topic_name_length={}", msg.stream_id,
+                    msg.data.size(), msg.fin, topic_name_length);
+            }
             continue;
         }
 
         std::string topic_name(msg.data.begin() + 4, msg.data.begin() + 4 + topic_name_length);
         uint64_t    seq = 0;
         std::memcpy(&seq, msg.data.data() + 4 + topic_name_length, 8);
+        {
+            std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+            topic_stats&                stats = stats_[topic_name];
+            stats.received++;
+            stats.bytes_received += msg.data.size();
+            auto s = static_cast<int64_t>(seq);
+            if (s < stats.highest_seq) {
+                stats.out_of_order++;
+                if (stats.out_of_order <= 20) {
+                    spdlog::get("illixr")->warn("[DIAG][biphony] out of order: topic={} seq={} highest_seq={} stream_id={}",
+                                                topic_name, seq, stats.highest_seq, msg.stream_id);
+                }
+            } else if (s == stats.highest_seq) {
+                stats.duplicate++;
+            } else {
+                stats.missing += static_cast<uint64_t>(s - stats.highest_seq - 1);
+                stats.highest_seq = s;
+            }
+            if (stats.received <= 5) {
+                spdlog::get("illixr")->info("[DIAG][biphony] recv: topic={} seq={} size={} stream_id={} fin={} client_id={}",
+                                            topic_name, seq, msg.data.size(), msg.stream_id, msg.fin, msg.client_id);
+            }
+        }
 
         if (!client && topic_name == HELLO_TOPIC) {
             peer_connected_ = true;
@@ -272,6 +358,10 @@ void biphony_network_backend::deliver_in_order(const std::string& topic_name, ui
             state.next_seq++;
         }
     }
+    std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+    topic_stats&                stats = stats_[topic_name];
+    stats.held                        = state.held.size();
+    stats.awaiting_seq                = state.next_seq;
 }
 
 void biphony_network_backend::topic_create(std::string topic_name, network::topic_config& config) {
@@ -331,6 +421,12 @@ void biphony_network_backend::topic_receive(const std::string& topic_name, std::
     }
 
     if (!switchboard_->topic_exists(topic_name)) {
+        std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+        topic_stats&                stats = stats_[topic_name];
+        stats.no_topic++;
+        if (stats.no_topic <= 5) {
+            spdlog::get("illixr")->warn("[DIAG][biphony] dropped message: no local switchboard topic '{}'", topic_name);
+        }
         return;
     }
 
@@ -343,6 +439,8 @@ void biphony_network_backend::topic_receive(const std::string& topic_name, std::
 }
 
 void biphony_network_backend::stop() {
+    diag_report();
+    diag_reporter_.stop();
     running_ = false;
     // close() signals shutdown AND unblocks the in-flight blocking recv() in
     // read_thread_, and joins Biphony's own internal engine thread before
@@ -365,6 +463,6 @@ extern "C" MY_EXPORT_API plugin* this_plugin_factory(phonebook* pb) {
     // The runtime owns the plugin returned by this factory. Register a non-owning
     // service alias so the phonebook does not try to delete the same object again.
     pb->register_impl<network::biphony_backend>(std::shared_ptr<network::biphony_backend>(
-        static_cast<network::biphony_backend*>(obj), [](network::biphony_backend*) { }));
+        static_cast<network::biphony_backend*>(obj), [](network::biphony_backend*) {}));
     return obj;
 }

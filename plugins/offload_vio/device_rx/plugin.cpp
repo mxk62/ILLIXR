@@ -18,6 +18,20 @@ using namespace ILLIXR::data_format;
     pose::head_pose_type datum_pose_tmp{time_point{}, Eigen::Vector3f{0, 0, 0}, Eigen::Quaternionf{1, 0, 0, 0}};
     switchboard::ptr<pose::head_pose_type> datum_pose = pose_.allocate<pose::head_pose_type>(std::move(datum_pose_tmp));
     pose_.put(std::move(datum_pose));
+
+    diag_reporter_.start(std::chrono::milliseconds(1000), [this]() {
+        Eigen::Vector3f pos;
+        int64_t         ts;
+        {
+            std::lock_guard<std::mutex> lock(diag_mutex_);
+            pos = diag_last_pos_;
+            ts  = diag_last_ts_;
+        }
+        spdlog::get(name_)->info("[DIAG][device_rx] vio_pose_received={} parse_failed={} slow_pose_published={} "
+                                 "position_changed={} last_pos=({:.4f},{:.4f},{:.4f}) last_ts={} reader_backlog={}",
+                                 diag_dequeued_.load(), diag_parse_failed_.load(), diag_published_.load(),
+                                 diag_pos_changed_.load(), pos.x(), pos.y(), pos.z(), ts, vio_pose_reader_.size());
+    });
 }
 
 ILLIXR::threadloop::skip_option offload_reader::_p_should_skip() {
@@ -26,7 +40,8 @@ ILLIXR::threadloop::skip_option offload_reader::_p_should_skip() {
 
 void offload_reader::_p_one_iteration() {
     if (vio_pose_reader_.size() > 0) {
-        auto                   buffer_ptr   = vio_pose_reader_.dequeue();
+        auto buffer_ptr = vio_pose_reader_.dequeue();
+        diag_dequeued_++;
         std::string            buffer_str   = **buffer_ptr;
         std::string::size_type end_position = buffer_str.find(delimiter);
         // process the data
@@ -35,6 +50,7 @@ void offload_reader::_p_one_iteration() {
         if (success) {
             receive_vio_output(vio_output);
         } else {
+            diag_parse_failed_++;
             spdlog::get(name_)->error("[offload_vio.device_rx: Cannot parse VIO output!!");
         }
     }
@@ -50,6 +66,15 @@ void offload_reader::receive_vio_output(const vio_output_proto::VIOOutput& vio_o
         Eigen::Quaternionf{static_cast<float>(slow_pose.rotation().w()), static_cast<float>(slow_pose.rotation().x()),
                            static_cast<float>(slow_pose.rotation().y()), static_cast<float>(slow_pose.rotation().z())}};
 
+    {
+        std::lock_guard<std::mutex> lock(diag_mutex_);
+        if (datum_pose_tmp.position != diag_last_pos_) {
+            diag_pos_changed_++;
+        }
+        diag_last_pos_ = datum_pose_tmp.position;
+        diag_last_ts_  = static_cast<int64_t>(slow_pose.timestamp());
+    }
+    diag_published_++;
     switchboard::ptr<pose::head_pose_type> datum_pose = pose_.allocate<pose::head_pose_type>(std::move(datum_pose_tmp));
     pose_.put(std::move(datum_pose));
 

@@ -17,6 +17,12 @@ using namespace ILLIXR::data_format;
     , imu_cam_reader_{switchboard_->get_buffered_reader<switchboard::event_wrapper<std::string>>("compressed_imu_cam")}
     , log_(spdlogger(switchboard_->get_env_char("OFFLOAD_VIO_LOG_LEVEL"))) {
     log_->info("Camera Time,Uplink Time(ms)");
+    diag_reporter_.start(std::chrono::milliseconds(1000), [this]() {
+        log_->info("[DIAG][server_rx] dequeued={} parse_failed={} enqueued_to_decoder={} decoded={} cam_published={} "
+                   "blocked_in_decoder_wait_ms={} last_frame_id={} reader_backlog={}",
+                   diag_dequeued_.load(), diag_parse_failed_.load(), diag_enqueued_.load(), diag_decoded_.load(),
+                   diag_cam_published_.load(), diag_waiting_ms_.load(), diag_last_frame_id_.load(), imu_cam_reader_.size());
+    });
 }
 
 ILLIXR::threadloop::skip_option server_reader::_p_should_skip() {
@@ -25,15 +31,18 @@ ILLIXR::threadloop::skip_option server_reader::_p_should_skip() {
 
 void server_reader::_p_one_iteration() {
     if (imu_cam_reader_.size() > 0) {
-        auto                       buffer_ptr   = imu_cam_reader_.dequeue();
+        auto buffer_ptr = imu_cam_reader_.dequeue();
+        diag_dequeued_++;
         std::string                buffer_str   = **buffer_ptr;
         std::string::size_type     end_position = buffer_str.find(delimiter_);
         vio_input_proto::IMUCamVec vio_input;
         bool                       success = vio_input.ParseFromString(buffer_str.substr(0, end_position));
         if (!success) {
+            diag_parse_failed_++;
             log_->error("[offload_vio.server_rx]Error parsing the protobuf, vio input size = {}",
                         buffer_str.size() - delimiter_.size());
         } else {
+            diag_last_frame_id_ = vio_input.frame_id();
             receive_vio_input(vio_input);
         }
     }
@@ -51,6 +60,7 @@ void server_reader::start() {
                     .count();
             // std::cout << "=== latency: " << (curr - timestamp) / 1000000.0 << std::endl;
         });
+        diag_decoded_++;
         {
             std::lock_guard<std::mutex> lock{mutex_};
             this->img0_dst_ = std::forward<cv::Mat>(img0);
@@ -93,9 +103,23 @@ void server_reader::receive_vio_input(const vio_input_proto::IMUCamVec& vio_inpu
     queue_.push(curr);
     std::unique_lock<std::mutex> lock{mutex_};
     decoder_->enqueue(img0_copy, img1_copy);
-    condition_variable_.wait(lock, [this]() {
-        return img_ready_;
-    });
+    diag_enqueued_++;
+    // DIAG: same wait as before, but report every 2 s while blocked.
+    {
+        auto wait_start = std::chrono::steady_clock::now();
+        while (!condition_variable_.wait_for(lock, std::chrono::seconds(2), [this]() {
+            return img_ready_;
+        })) {
+            auto waited =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - wait_start).count();
+            diag_waiting_ms_ = static_cast<uint64_t>(waited);
+            log_->error("[DIAG][server_rx] still waiting for decoder: {} ms, frame_id={} cam_ts={} img0_bytes={} "
+                        "img1_bytes={} enqueued={} decoded={}",
+                        waited, vio_input.frame_id(), cam_data.timestamp(), cam_data.img0_data().size(),
+                        cam_data.img1_data().size(), diag_enqueued_.load(), diag_decoded_.load());
+        }
+        diag_waiting_ms_ = 0;
+    }
     img_ready_ = false;
 
     cv::Mat img0(img0_dst_.clone());
@@ -110,6 +134,7 @@ void server_reader::receive_vio_input(const vio_input_proto::IMUCamVec& vio_inpu
     cv::Mat img1(cam_data.rows(), cam_data.cols(), CV_8UC1, img1_copy.data());
     // Without compression end
 #endif
+    diag_cam_published_++;
     cam_.put(cam_.allocate<binocular_cam_type>(binocular_cam_type{
         time_point{std::chrono::nanoseconds{cam_data.timestamp()}},
         img0.clone(),

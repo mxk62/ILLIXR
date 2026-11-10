@@ -1,5 +1,6 @@
 #pragma once
 
+#include "illixr/diag_stats.hpp"
 #include "illixr/network/network_backend.hpp"
 #include "illixr/network/topic_config.hpp"
 #include "illixr/plugin.hpp"
@@ -64,10 +65,6 @@ private:
     };
 
     std::unordered_map<std::string, reorder_state> reorder_;
-
-    // Per-topic sender sequence number, the next one to put on the wire.
-    std::mutex                                send_seq_mutex_;
-    std::unordered_map<std::string, uint64_t> next_send_seq_;
 
     // Maps ILLIXR's topic_config::priority_type (higher enum value = more
     // urgent) onto Biphony/QUIC's HTTP/3 extensible-priority "urgency"
@@ -155,6 +152,38 @@ private:
     // of the Biphony example clients and biphony::ClientConfig::address()).
     // Parsed from a comma-separated ILLIXR_BIPHONY_CLIENT_ADDRESSES env var.
     std::vector<std::string> client_addresses_;
+
+    // ---- Diagnostics ----
+    // Per-topic counters, printed once per second by diag_reporter_.
+    struct topic_stats {
+        uint64_t sent           = 0; // try_send() accepted
+        uint64_t refused        = 0; // try_send() returned false
+        uint64_t bytes_sent     = 0;
+        uint64_t received       = 0; // framed messages received for this topic
+        uint64_t bytes_received = 0;
+        uint64_t out_of_order   = 0; // seq lower than the highest seq already received
+        uint64_t duplicate      = 0; // seq equal to the highest seq already received
+        uint64_t missing        = 0; // sum of gaps in seq (seq > highest + 1)
+        uint64_t no_topic       = 0; // dropped: local switchboard topic does not exist
+        uint64_t next_send_seq  = 0;
+        int64_t  highest_seq    = -1;
+        uint64_t awaiting_seq   = 0; // next seq the receiver will deliver
+        uint64_t held           = 0; // received but waiting for an earlier seq
+    };
+
+    void diag_report();
+
+    std::mutex                         stats_mutex_;
+    std::map<std::string, topic_stats> stats_;
+    uint64_t                           recv_calls_ok_   = 0; // recv() returned BIPHONY_OK
+    uint64_t                           recv_not_fin_    = 0; // delivered with fin == false
+    uint64_t                           recv_empty_      = 0; // zero-byte messages (peer stream retirement)
+    uint64_t                           recv_malformed_  = 0; // too short to hold our framing
+    uint64_t                           recv_other_rc_   = 0; // recv() returned something other than OK/DISCONNECTED
+    uint64_t                           last_client_id_  = 0;
+    uint64_t                           client_id_flips_ = 0; // received client_id differs from previous message
+    std::atomic<uint64_t>              peer_wait_ms_{0};     // total time send_to_peer waited for the hello
+    diag::periodic_reporter            diag_reporter_;
 };
 
 } // namespace ILLIXR

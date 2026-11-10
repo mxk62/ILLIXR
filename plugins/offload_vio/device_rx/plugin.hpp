@@ -13,6 +13,11 @@
 #    include "../proto/output_stub.hpp"
 #endif
 
+#include "illixr/diag_stats.hpp"
+
+#include <atomic>
+#include <mutex>
+
 namespace ILLIXR {
 class offload_reader : public threadloop {
 public:
@@ -33,5 +38,15 @@ private:
     std::string        server_ip_;
 
     std::string delimiter = "END!";
+
+    // ---- Diagnostics ----
+    std::atomic<uint64_t>   diag_dequeued_{0}; // vio_pose messages taken from the switchboard
+    std::atomic<uint64_t>   diag_parse_failed_{0};
+    std::atomic<uint64_t>   diag_published_{0};   // slow_pose published from a vio_pose
+    std::atomic<uint64_t>   diag_pos_changed_{0}; // published position differs from the previous one
+    std::mutex              diag_mutex_;
+    Eigen::Vector3f         diag_last_pos_{0, 0, 0};
+    int64_t                 diag_last_ts_ = 0;
+    diag::periodic_reporter diag_reporter_;
 };
 } // namespace ILLIXR

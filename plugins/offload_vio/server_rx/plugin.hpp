@@ -15,6 +15,9 @@
 #    include "../proto/input_stub.hpp"
 #endif
 
+#include "illixr/diag_stats.hpp"
+
+#include <atomic>
 #include <boost/lockfree/spsc_queue.hpp>
 
 namespace ILLIXR {
@@ -46,5 +49,15 @@ private:
     std::shared_ptr<spdlog::logger>                                       log_;
 
     const std::string delimiter_ = "EEND!";
+
+    // ---- Diagnostics ----
+    std::atomic<uint64_t>   diag_dequeued_{0};     // compressed_imu_cam messages taken from the switchboard
+    std::atomic<uint64_t>   diag_parse_failed_{0}; // protobuf parse failures
+    std::atomic<uint64_t>   diag_enqueued_{0};     // frames handed to the decoder
+    std::atomic<uint64_t>   diag_decoded_{0};      // decoder callbacks
+    std::atomic<uint64_t>   diag_cam_published_{0};
+    std::atomic<uint64_t>   diag_waiting_ms_{0}; // > 0 while blocked waiting for the decoder
+    std::atomic<int64_t>    diag_last_frame_id_{-1};
+    diag::periodic_reporter diag_reporter_;
 };
 } // namespace ILLIXR
