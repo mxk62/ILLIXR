@@ -29,11 +29,12 @@ set(BIPHONY_REPO "git@github.com:NSF-Breaking-Low-Agora/biphony_quiche.git")
 # reproducibility. Update this as Biphony's FFI stabilizes.
 #
 # This is the tip of `issues/24`: the C/C++ FFI (including
-# biphony_init_logging()) and the one-shot-stream-retirement fix, on top of
-# main. `issues/24` is periodically rebased onto main, which makes older pins
-# unreachable; when a fetch fails with "reference is not a tree", re-pin to
-# the branch's current tip.
-set(BIPHONY_TAG  "bfd2a8330b565068df5dc5253c48c46e3b4e2249")
+# biphony_init_logging()), the one-shot-stream-retirement fix, and the fix
+# for the engine panic it introduced (retired peer streams tracked in
+# partial_outgoing), on top of main. `issues/24` is periodically rebased
+# onto main, which makes older pins unreachable; when a fetch fails with
+# "reference is not a tree", re-pin to the branch's current tip.
+set(BIPHONY_TAG  "97c39c3dbf7c863fa70c6e43cd61d2774a9ca8cd")
 
 FetchContent_Declare(Biphony
                       GIT_REPOSITORY ${BIPHONY_REPO}
