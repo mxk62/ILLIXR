@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <biphony.hpp>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -52,6 +53,21 @@ private:
                   uint8_t biphony_priority);
 
     void send_to_peer(const std::string& topic_name, std::string&& message, network::topic_config::priority_type priority);
+
+    // Delivers a topic's messages to topic_receive() in sender seq order.
+    void deliver_in_order(const std::string& topic_name, uint64_t seq, std::vector<char>&& message);
+
+    // Per-topic receive-side reorder buffer; touched only by the read thread.
+    struct reorder_state {
+        uint64_t                              next_seq = 0;
+        std::map<uint64_t, std::vector<char>> held;
+    };
+
+    std::unordered_map<std::string, reorder_state> reorder_;
+
+    // Per-topic sender sequence number, the next one to put on the wire.
+    std::mutex                                send_seq_mutex_;
+    std::unordered_map<std::string, uint64_t> next_send_seq_;
 
     // Maps ILLIXR's topic_config::priority_type (higher enum value = more
     // urgent) onto Biphony/QUIC's HTTP/3 extensible-priority "urgency"

@@ -166,18 +166,30 @@ uint8_t biphony_network_backend::map_priority(network::topic_config::priority_ty
 template<typename Engine>
 bool biphony_network_backend::send_raw(Engine& engine, uint64_t peer_client_id, const std::string& topic_name,
                                        const std::string& message, uint8_t biphony_priority) {
-    // Wire payload: topic_name_length:4B (uint32) | topic_name | message
+    // Wire payload: topic_name_length:4B (uint32) | topic_name | seq:8B (uint64, per topic) | message
+    // The receiver delivers each topic in seq order (see deliver_in_order), so
+    // a seq is consumed only when try_send() accepts the message; a refused
+    // message must not leave a gap the receiver would wait on forever.
     // No outer total_length prefix is needed (unlike tcp_network_backend's
     // hand-rolled byte-stream framing): Biphony already delivers one complete
     // logical message per recv() call.
-    std::vector<uint8_t> packet(4 + topic_name.size() + message.size());
+    std::lock_guard<std::mutex> seq_lock(send_seq_mutex_);
+    uint64_t&                   next_seq = next_send_seq_[topic_name];
+    uint64_t                    seq      = next_seq;
+
+    std::vector<uint8_t> packet(4 + topic_name.size() + 8 + message.size());
     uint32_t             topic_name_length = static_cast<uint32_t>(topic_name.size());
     std::memcpy(packet.data(), &topic_name_length, 4);
     std::memcpy(packet.data() + 4, topic_name.data(), topic_name.size());
-    std::memcpy(packet.data() + 4 + topic_name.size(), message.data(), message.size());
+    std::memcpy(packet.data() + 4 + topic_name.size(), &seq, 8);
+    std::memcpy(packet.data() + 4 + topic_name.size() + 8, message.data(), message.size());
 
     uint64_t stream_id = next_stream_id_.fetch_add(4);
-    return engine.try_send(peer_client_id, stream_id, packet, /*fin=*/true, biphony_priority);
+    bool     ok        = engine.try_send(peer_client_id, stream_id, packet, /*fin=*/true, biphony_priority);
+    if (ok) {
+        next_seq++;
+    }
+    return ok;
 }
 
 void biphony_network_backend::send_to_peer(const std::string& topic_name, std::string&& message,
@@ -217,11 +229,13 @@ void biphony_network_backend::run_read_loop(Engine& engine) {
         }
         uint32_t topic_name_length;
         std::memcpy(&topic_name_length, msg.data.data(), 4);
-        if (msg.data.size() < 4 + topic_name_length) {
+        if (msg.data.size() < 4 + static_cast<uint64_t>(topic_name_length) + 8) {
             continue;
         }
 
         std::string topic_name(msg.data.begin() + 4, msg.data.begin() + 4 + topic_name_length);
+        uint64_t    seq = 0;
+        std::memcpy(&seq, msg.data.data() + 4 + topic_name_length, 8);
 
         if (!client && topic_name == HELLO_TOPIC) {
             peer_connected_ = true;
@@ -229,8 +243,34 @@ void biphony_network_backend::run_read_loop(Engine& engine) {
             continue;
         }
 
-        std::vector<char> message(msg.data.begin() + 4 + topic_name_length, msg.data.end());
+        deliver_in_order(topic_name, seq, std::vector<char>(msg.data.begin() + 4 + topic_name_length + 8, msg.data.end()));
+    }
+}
+
+void biphony_network_backend::deliver_in_order(const std::string& topic_name, uint64_t seq, std::vector<char>&& message) {
+    // Biphony sends every message on its own QUIC stream, and QUIC does not
+    // order data across streams, so messages of one topic can arrive out of
+    // order (observed: the first compressed_imu_cam frames arrived as seq 7,
+    // 61, 127, ..., 1, ...). Consumers rely on the in-order delivery that
+    // tcp_network_backend's single byte stream gives them -- e.g. the H.264
+    // decoder in offload_vio.server_rx hangs forever if its first frame is not
+    // the first encoded frame. So hold early messages until the gap fills.
+    // Only the read thread calls this.
+    reorder_state& state = reorder_[topic_name];
+    if (seq < state.next_seq) {
+        spdlog::get("illixr")->warn("[biphony_network_backend] dropping stale message: topic={} seq={} expected={}", topic_name,
+                                    seq, state.next_seq);
+        return;
+    }
+    if (seq > state.next_seq) {
+        state.held.emplace(seq, std::move(message));
+    } else {
         topic_receive(topic_name, message);
+        state.next_seq++;
+        for (auto it = state.held.begin(); it != state.held.end() && it->first == state.next_seq; it = state.held.erase(it)) {
+            topic_receive(topic_name, it->second);
+            state.next_seq++;
+        }
     }
 }
 
